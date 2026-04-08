@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import uuid
 
@@ -21,9 +22,33 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Allowed origins — covers local dev AND the live GitHub Pages frontend.
+# To add more origins, update BACKEND_CORS_ORIGINS in your Render env vars:
+#   e.g. https://epic-ice-fire.github.io,http://localhost:57318
+_raw_origins = os.getenv(
+    "BACKEND_CORS_ORIGINS",
+    "https://epic-ice-fire.github.io",
+)
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
+# Always include localhost variants for local development
+_local_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8000",
+    "http://localhost:57318",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+]
+
+_all_origins = list(set(_allowed_origins + _local_origins))
+
+logger.info(f"CORS allowed origins: {_all_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origins=_all_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
