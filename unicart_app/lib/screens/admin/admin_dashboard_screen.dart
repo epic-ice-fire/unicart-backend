@@ -407,20 +407,221 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
+  /// Shows a price-verification checklist before the admin starts processing.
+  /// Forces the admin to confirm they have manually verified all item prices
+  /// against the guest (logged-out) price on Temu before placing the order.
+  Future<void> startProcessingWithPriceCheck({
+    required int lobbyId,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    // Build a compact item list for the dialog
+    final paidItems = items.where((i) => i["is_paid"] == true && i["is_active"] == true).toList();
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.fact_check_outlined, color: Color(0xFF1F7A4C)),
+            SizedBox(width: 8),
+            Flexible(
+              child: Text("Verify prices before processing",
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF7E6),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFAC515)),
+                  ),
+                  child: const Text(
+                    "UniCart uses guest-price standardisation. Before clicking "
+                    "Start Processing you must manually verify every item price "
+                    "on Temu while logged OUT (or in a private window).",
+                    style: TextStyle(
+                        fontSize: 13, color: Color(0xFF7A2E0E), height: 1.5,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text("Paid items in this batch:",
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                const SizedBox(height: 8),
+                if (paidItems.isEmpty)
+                  const Text("No paid items found.",
+                      style: TextStyle(color: Color(0xFF667085)))
+                else
+                  ...paidItems.map((item) => Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF9FAFB),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFE4E7EC)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          item["item_link"]?.toString() ?? "Unknown link",
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                              color: Color(0xFF101828)),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Icon(Icons.person_outline,
+                                size: 12, color: Color(0xFF667085)),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                item["user_email"]?.toString() ?? "",
+                                style: const TextStyle(
+                                    fontSize: 11, color: Color(0xFF667085)),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFECFDF3),
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(color: const Color(0xFF4BB543)),
+                              ),
+                              child: Text(
+                                "₦${item["item_amount"]}  (submitted guest price)",
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF027A48)),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  )),
+                const SizedBox(height: 16),
+                const Text("Admin checklist:",
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                const SizedBox(height: 8),
+                const Text(
+                  "✅  I am logged OUT of Temu (or in a private window)"
+                  "✅  I have checked each item link above as a guest"
+                  "✅  The submitted prices match what I see as a guest"
+                  "✅  Any price discrepancies have been resolved (force-removed)"
+                  "✅  I am ready to place the group order",
+                  style: TextStyle(
+                      fontSize: 13, color: Color(0xFF344054), height: 1.7),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF3F2),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFFECACA)),
+                  ),
+                  child: const Text(
+                    "By clicking Start Processing you confirm all prices have been "
+                    "verified against guest pricing. This action cannot be undone.",
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFFB42318),
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel — verify first"),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1F7A4C)),
+            onPressed: () => Navigator.pop(ctx, true),
+            icon: const Icon(Icons.play_circle_outline, color: Colors.white),
+            label: const Text("Start Processing",
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    await updateBatchStatus(lobbyId: lobbyId, newStatus: "processing");
+  }
+
   Widget buildBatchActionButtons(Map<String, dynamic> batch) {
     final status = batch["status"]?.toString() ?? "";
     final lobbyId = batch["lobby_id"] as int;
+    final items = ((batch["items"] as List?) ?? []).cast<Map<String, dynamic>>();
 
     if (status == "triggered") {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: ElevatedButton.icon(
-          onPressed: isBusy
-              ? null
-              : () => updateBatchStatus(lobbyId: lobbyId, newStatus: "processing"),
-          icon: const Icon(Icons.play_circle_outline),
-          label: const Text("Start Processing"),
-        ),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Price verification reminder banner
+          Container(
+            padding: const EdgeInsets.all(12),
+            margin: const EdgeInsets.only(bottom: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEFF8FF),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF53B1FD)),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 16, color: Color(0xFF175CD3)),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "Before processing: log OUT of Temu, open each item link "
+                    "in a private window, and confirm the submitted price matches "
+                    "the guest price. Use Force Remove for any discrepancies.",
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF175CD3),
+                        fontWeight: FontWeight.w600,
+                        height: 1.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: ElevatedButton.icon(
+              onPressed: isBusy
+                  ? null
+                  : () => startProcessingWithPriceCheck(
+                        lobbyId: lobbyId, items: items),
+              icon: const Icon(Icons.fact_check_outlined),
+              label: const Text("Verify Prices & Start Processing"),
+            ),
+          ),
+        ],
       );
     }
     if (status == "processing") {
