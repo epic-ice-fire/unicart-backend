@@ -1,0 +1,43 @@
+name: Deploy UniCart Flutter Web
+
+on:
+  push:
+    branches:
+      - main   # triggers on every push to main
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.29.2"
+          channel: stable
+
+      - name: Get dependencies
+        working-directory: unicart_app
+        run: flutter pub get
+
+      - name: Build Flutter web
+        working-directory: unicart_app
+        run: flutter build web --release --base-href "/unicart_app/"
+
+      - name: Add _redirects for routing
+        run: echo "/*  /index.html  200" > unicart_app/build/web/_redirects
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: unicart_app/build/web
+          publish_branch: gh-pages
