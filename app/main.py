@@ -1,4 +1,4 @@
-content = '''import logging
+﻿import logging
 import os
 import time
 import uuid
@@ -11,78 +11,52 @@ from app.routers import auth, lobbies, payments
 
 logging.basicConfig(
     level=logging.INFO,
-    format=\"%(asctime)s | %(levelname)s | %(name)s | %(message)s\",
-    datefmt=\"%Y-%m-%d %H:%M:%S\",
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger(\"unicart\")
+logger = logging.getLogger("unicart")
 
 app = FastAPI(
-    title=\"UniCart API\",
-    description=\"Campus group-buying platform — PAU edition\",
-    version=\"1.0.0\",
+    title="UniCart API",
+    description="Campus group-buying platform",
+    version="1.0.0",
 )
 
-_raw_origins = os.getenv(
-    \"BACKEND_CORS_ORIGINS\",
-    \"https://epic-ice-fire.github.io\",
-)
-_allowed_origins = [o.strip() for o in _raw_origins.split(\",\") if o.strip()]
-_local_origins = [
-    \"http://localhost:3000\",
-    \"http://localhost:5173\",
-    \"http://localhost:8000\",
-    \"http://localhost:57318\",
-    \"http://127.0.0.1:3000\",
-    \"http://127.0.0.1:8000\",
-]
-_all_origins = list(set(_allowed_origins + _local_origins))
+_raw = os.getenv("BACKEND_CORS_ORIGINS", "https://epic-ice-fire.github.io")
+_origins = [o.strip() for o in _raw.split(",") if o.strip()]
+_origins += ["http://localhost:3000","http://localhost:8000","http://localhost:57318","http://127.0.0.1:8000"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_all_origins,
+    allow_origins=list(set(_origins)),
     allow_credentials=True,
-    allow_methods=[\"*\"],
-    allow_headers=[\"*\"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-
-@app.middleware(\"http\")
+@app.middleware("http")
 async def request_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())[:8]
     start = time.perf_counter()
     response = await call_next(request)
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
-    logger.info(
-        f\"[{request_id}] {request.method} {request.url.path} \"
-        f\"-> {response.status_code} ({duration_ms}ms)\"
-    )
-    response.headers[\"X-Request-ID\"] = request_id
+    logger.info(f"[{request_id}] {request.method} {request.url.path} -> {response.status_code} ({duration_ms}ms)")
+    response.headers["X-Request-ID"] = request_id
     return response
-
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f\"Unhandled exception on {request.url.path}: {exc}\", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={\"detail\": \"An unexpected error occurred. Please try again.\"},
-    )
-
+    logger.error(f"Unhandled exception on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "An unexpected error occurred."})
 
 app.include_router(auth.router)
 app.include_router(lobbies.router)
 app.include_router(payments.router)
 
-
-@app.get(\"/\", tags=[\"health\"])
+@app.get("/", tags=["health"])
 def root():
-    return {\"status\": \"ok\", \"service\": \"UniCart API\", \"version\": \"1.0.0\"}
+    return {"status": "ok", "service": "UniCart API", "version": "1.0.0"}
 
-
-@app.get(\"/health\", tags=[\"health\"])
+@app.get("/health", tags=["health"])
 def health():
-    return {\"status\": \"healthy\"}
-'''
-with open('app/main.py', 'w') as f:
-    f.write(content)
-print('main.py written successfully')
+    return {"status": "healthy"}
