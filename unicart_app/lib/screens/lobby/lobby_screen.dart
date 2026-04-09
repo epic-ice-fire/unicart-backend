@@ -176,18 +176,17 @@ class _LobbyScreenState extends State<LobbyScreen> {
         final uri = Uri.parse(authorizationUrl);
         final launched = await launchUrl(
           uri,
-          // On mobile this opens in browser; on web opens new tab
           mode: LaunchMode.externalApplication,
           webOnlyWindowName: "_blank",
         );
-        _startPolling();
         if (launched) {
+          _startPolling();
           showMessage(
             "Paystack opened. Complete payment then tap \"I've Paid\" below.",
             isSuccess: true,
           );
         } else {
-          showMessage("Could not open Paystack automatically — tap \"Open payment page\" to try again.");
+          showMessage("Payment link ready but couldn't open automatically. Tap 'Open again'.");
         }
       }
     } catch (e) {
@@ -274,8 +273,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 
   Future<void> addItem() async {
-    final amountRaw = double.tryParse(itemAmountController.text.trim());
-    final amount = amountRaw != null ? double.parse(amountRaw.toStringAsFixed(2)) : null;
+    final amount = int.tryParse(itemAmountController.text.trim());
     final itemLink = itemLinkController.text.trim();
     if (itemLink.isEmpty || amount == null || amount <= 0) {
       showMessage("Enter a valid item link and amount.");
@@ -284,7 +282,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
     setState(() => isBusy = true);
     try {
       final response = await LobbyService.addItem(
-        widget.token, itemLink: itemLink, itemAmount: int.parse(amount.toStringAsFixed(0)),
+        widget.token, itemLink: itemLink, itemAmount: amount,
       );
       itemLinkController.clear();
       itemAmountController.clear();
@@ -314,65 +312,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 
   Future<void> payForItem(int itemId) async {
-    // ── Guest price confirmation before payment ────────────────────────────────
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.warning_amber_rounded, color: Color(0xFFB54708)),
-            SizedBox(width: 8),
-            Text("Confirm guest price",
-                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-          ],
-        ),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              "Before paying, confirm that the price you entered is the "
-              "guest (logged-out) price from Temu or the relevant platform.",
-              style: TextStyle(fontSize: 14, height: 1.5),
-            ),
-            SizedBox(height: 14),
-            Text("Checklist:", style: TextStyle(fontWeight: FontWeight.w800)),
-            SizedBox(height: 6),
-            Text(
-              "✅  I browsed this product while logged OUT"
-
-              "✅  I used a private / incognito window"
-
-              "✅  The price I entered matches what a guest account sees"
-
-              "✅  I understand payments are non-refundable",
-              style: TextStyle(fontSize: 13, height: 1.6, color: Color(0xFF344054)),
-            ),
-            SizedBox(height: 14),
-            Text(
-              "Submitting a personalised price is a policy violation "
-              "and may result in removal with no refund.",
-              style: TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFFB42318),
-                  fontWeight: FontWeight.w600),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel"),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("Yes, price is correct — Pay"),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
     setState(() => isBusy = true);
     try {
       final response = await LobbyService.initializeItemPayment(
@@ -385,14 +324,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
           mode: LaunchMode.externalApplication,
           webOnlyWindowName: "_blank",
         );
-        _startPolling();
         if (launched) {
+          _startPolling();
           showMessage(
-            "Paystack opened. Complete payment then tap \"Verify payment\" on your item below.",
+            "Paystack opened. Come back and tap 'Verify payment' once done.",
             isSuccess: true,
           );
         } else {
-          showMessage("Could not open Paystack — try tapping Pay again.");
+          showMessage("Could not open Paystack. Try again.");
         }
       }
       await loadAll();
@@ -871,210 +810,225 @@ class _LobbyScreenState extends State<LobbyScreen> {
 
                           const SizedBox(height: 18),
 
-                          // My account + Lobby access — stacks on mobile, side by side on wide screens
-                          LayoutBuilder(builder: (ctx, cons) {
-                            final isWide = cons.maxWidth > 580;
-                            Widget accountCard = Card(
-                              elevation: 0,
-                              child: Padding(
-                                padding: const EdgeInsets.all(22),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text("My account",
-                                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF101828))),
-                                    const SizedBox(height: 16),
-                                    Container(
-                                      padding: const EdgeInsets.all(14),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFF9FAFB),
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: Border.all(color: const Color(0xFFE4E7EC)),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          Container(
-                                            width: 46, height: 46,
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFF1F7A4C),
-                                              borderRadius: BorderRadius.circular(14),
-                                            ),
-                                            child: Center(
+                          // My account + Lobby access
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Card(
+                                  elevation: 0,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(22),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const Text("My account",
+                                            style: TextStyle(
+                                                fontSize: 20, fontWeight: FontWeight.w800,
+                                                color: Color(0xFF101828))),
+                                        const SizedBox(height: 8),
+                                        const Text(
+                                            "Your login, verification, and admin access.",
+                                            style: TextStyle(color: Color(0xFF667085))),
+                                        const SizedBox(height: 16),
+                                        // Account email row
+                                        Row(
+                                          children: [
+                                            const Icon(Icons.email_outlined,
+                                                size: 16, color: Color(0xFF667085)),
+                                            const SizedBox(width: 8),
+                                            Expanded(
                                               child: Text(
-                                                accountEmail.isNotEmpty ? accountEmail[0].toUpperCase() : "?",
-                                                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
+                                                accountEmail,
+                                                style: const TextStyle(
+                                                    fontSize: 13,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: Color(0xFF344054)),
+                                                overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
-                                          ),
-                                          const SizedBox(width: 14),
-                                          Expanded(
-                                            child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                Text(accountEmail,
-                                                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF101828)),
-                                                    overflow: TextOverflow.ellipsis),
-                                                const SizedBox(height: 4),
-                                                Wrap(spacing: 6, runSpacing: 4, children: [
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                                    decoration: BoxDecoration(
-                                                      color: isVerified ? const Color(0xFFECFDF3) : const Color(0xFFFEF3F2),
-                                                      borderRadius: BorderRadius.circular(999),
-                                                      border: Border.all(color: isVerified ? const Color(0xFF4BB543) : const Color(0xFFFECACA)),
-                                                    ),
-                                                    child: Text(
-                                                      isVerified ? "✅ PAU Verified" : "❌ Not verified",
-                                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-                                                          color: isVerified ? const Color(0xFF027A48) : const Color(0xFFB42318)),
-                                                    ),
-                                                  ),
-                                                  if (isAdmin)
-                                                    Container(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                                      decoration: BoxDecoration(
-                                                        color: const Color(0xFFF4F3FF),
-                                                        borderRadius: BorderRadius.circular(999),
-                                                        border: Border.all(color: const Color(0xFF9E77ED)),
-                                                      ),
-                                                      child: const Text("👑 Admin",
-                                                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF5925DC))),
-                                                    ),
-                                                ]),
-                                                if (studentEmail != null) ...[
-                                                  const SizedBox(height: 4),
-                                                  Text("🎓 $studentEmail",
-                                                      style: const TextStyle(fontSize: 11, color: Color(0xFF667085)),
-                                                      overflow: TextOverflow.ellipsis),
-                                                ],
-                                              ],
+                                          ],
+                                        ),
+                                        const SizedBox(height: 10),
+                                        // Verification badge
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                  horizontal: 10, vertical: 5),
+                                              decoration: BoxDecoration(
+                                                color: isVerified
+                                                    ? const Color(0xFFECFDF3)
+                                                    : const Color(0xFFFEF3F2),
+                                                borderRadius: BorderRadius.circular(999),
+                                                border: Border.all(
+                                                    color: isVerified
+                                                        ? const Color(0xFF4BB543)
+                                                        : const Color(0xFFFECACA)),
+                                              ),
+                                              child: Text(
+                                                isVerified
+                                                    ? "✅ PAU Verified"
+                                                    : "❌ Not verified",
+                                                style: TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: isVerified
+                                                        ? const Color(0xFF027A48)
+                                                        : const Color(0xFFB42318)),
+                                              ),
                                             ),
+                                            if (isAdmin) ...[
+                                              const SizedBox(width: 8),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(
+                                                    horizontal: 10, vertical: 5),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(0xFFF4F3FF),
+                                                  borderRadius: BorderRadius.circular(999),
+                                                  border: Border.all(
+                                                      color: const Color(0xFF9E77ED)),
+                                                ),
+                                                child: const Text("👑 Admin",
+                                                    style: TextStyle(
+                                                        fontSize: 12,
+                                                        fontWeight: FontWeight.w700,
+                                                        color: Color(0xFF5925DC))),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                        if (studentEmail != null) ...[
+                                          const SizedBox(height: 8),
+                                          Row(
+                                            children: [
+                                              const Icon(Icons.school_outlined,
+                                                  size: 14, color: Color(0xFF667085)),
+                                              const SizedBox(width: 6),
+                                              Expanded(
+                                                child: Text(
+                                                  studentEmail,
+                                                  style: const TextStyle(
+                                                      fontSize: 12,
+                                                      color: Color(0xFF667085)),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 16),
-                                    SizedBox(
-                                      width: double.infinity,
-                                      child: ElevatedButton(
-                                        onPressed: isBusy ? null : openVerifyScreen,
-                                        child: Text(isVerified ? "Update PAU verification" : "Verify PAU email"),
-                                      ),
-                                    ),
-                                    if (isAdmin) ...[
-                                      const SizedBox(height: 10),
-                                      SizedBox(
-                                        width: double.infinity,
-                                        child: OutlinedButton.icon(
-                                          onPressed: isBusy ? null : openAdminDashboard,
-                                          icon: const Icon(Icons.admin_panel_settings_outlined),
-                                          label: const Text("Admin dashboard"),
+                                        const SizedBox(height: 16),
+                                        SizedBox(
+                                          width: double.infinity,
+                                          child: ElevatedButton(
+                                            onPressed: isBusy ? null : openVerifyScreen,
+                                            child: Text(isVerified
+                                                ? "Update PAU verification"
+                                                : "Verify PAU email"),
+                                          ),
                                         ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                            );
-
-                            Widget lobbyCard = Card(
-                              elevation: 0,
-                              child: Padding(
-                                padding: const EdgeInsets.all(22),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text("Lobby access",
-                                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF101828))),
-                                    const SizedBox(height: 8),
-                                    const Text("Pay the entry fee, join, and manage your spot.",
-                                        style: TextStyle(color: Color(0xFF667085))),
-                                    const SizedBox(height: 16),
-                                    Wrap(
-                                      spacing: 10, runSpacing: 10,
-                                      children: [
-                                        detailTile("Lobby ID", "#${lobby?.lobbyId ?? "-"}"),
-                                        detailTile("Status", lobby?.status ?? "Unknown"),
-                                        detailTile("Entry fee", "₦$entryFeeAmount"),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 16),
-                                    if (!isVerified)
-                                      _warningBox("Verify your PAU email before paying to join.")
-                                    else if (hasJoined)
-                                      _successBox("✅ You're in the lobby. Add items and pay for them.")
-                                    else if (hasPendingPayment || pendingPaymentReference != null)
-                                      Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          _infoBox(
-                                            "⏳ Entry fee payment pending.${pendingPaymentReference != null ? "\nRef: $pendingPaymentReference" : ""}",
-                                          ),
+                                        if (isAdmin) ...[
                                           const SizedBox(height: 10),
-                                          // Prominent verify button for mobile
-                                          SizedBox(
-                                            width: double.infinity,
-                                            child: ElevatedButton.icon(
-                                              style: ElevatedButton.styleFrom(
-                                                  backgroundColor: const Color(0xFF1F7A4C),
-                                                  minimumSize: const Size.fromHeight(52)),
-                                              onPressed: isBusy ? null : verifyEntryFeePayment,
-                                              icon: const Icon(Icons.verified_outlined, color: Colors.white),
-                                              label: const Text("I've Paid — Confirm Now",
-                                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800)),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 8),
                                           SizedBox(
                                             width: double.infinity,
                                             child: OutlinedButton.icon(
-                                              onPressed: isBusy ? null : reopenPaymentLink,
-                                              icon: const Icon(Icons.open_in_new),
-                                              label: const Text("Open Paystack again"),
+                                              onPressed: isBusy ? null : openAdminDashboard,
+                                              icon: const Icon(Icons.admin_panel_settings_outlined),
+                                              label: const Text("Admin dashboard"),
                                             ),
                                           ),
                                         ],
-                                      )
-                                    else
-                                      SizedBox(
-                                        width: double.infinity,
-                                        child: ElevatedButton.icon(
-                                          onPressed: isBusy ? null : startEntryFeePayment,
-                                          icon: const Icon(Icons.payment),
-                                          label: Text("Pay ₦$entryFeeAmount to Join"),
-                                        ),
-                                      ),
-                                    const SizedBox(height: 10),
-                                    SizedBox(
-                                      width: double.infinity,
-                                      child: OutlinedButton(
-                                        onPressed: isBusy || !hasJoined ? null : leaveLobby,
-                                        child: const Text("Leave lobby"),
-                                      ),
+                                      ],
                                     ),
-                                  ],
+                                  ),
                                 ),
                               ),
-                            );
+                              const SizedBox(width: 18),
+                              Expanded(
+                                child: Card(
+                                  elevation: 0,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(22),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const Text("Lobby access",
+                                            style: TextStyle(
+                                                fontSize: 20, fontWeight: FontWeight.w800,
+                                                color: Color(0xFF101828))),
+                                        const SizedBox(height: 8),
+                                        const Text(
+                                            "Pay the entry fee, join, and manage your spot.",
+                                            style: TextStyle(color: Color(0xFF667085))),
+                                        const SizedBox(height: 16),
+                                        Wrap(
+                                          spacing: 10, runSpacing: 10,
+                                          children: [
+                                            detailTile("Lobby ID", "#${lobby?.lobbyId ?? "-"}"),
+                                            detailTile("Status", lobby?.status ?? "Unknown"),
+                                            detailTile("Entry fee", "₦$entryFeeAmount"),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 16),
+                                        if (!isVerified)
+                                          _warningBox("Verify your PAU email before paying to join.")
+                                        else if (hasJoined)
+                                          _successBox("✅ You're in the lobby. Add items and pay for them.")
+                                        else if (hasPendingPayment || pendingPaymentReference != null)
+                                          Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              _infoBox(
+                                                "⏳ Entry fee payment pending.${pendingPaymentReference != null ? "\nRef: $pendingPaymentReference" : ""}",
+                                              ),
+                                              const SizedBox(height: 10),
+                                              SizedBox(
+                                                width: double.infinity,
+                                                child: ElevatedButton.icon(
+                                                  onPressed: isBusy ? null : verifyEntryFeePayment,
+                                                  icon: const Icon(Icons.verified_outlined),
+                                                  label: const Text("I've Completed Payment"),
+                                                ),
+                                              ),
+                                              const SizedBox(height: 8),
+                                              SizedBox(
+                                                width: double.infinity,
+                                                child: OutlinedButton.icon(
+                                                  onPressed: isBusy ? null : reopenPaymentLink,
+                                                  icon: const Icon(Icons.open_in_new),
+                                                  label: const Text("Open payment page"),
+                                                ),
+                                              ),
+                                            ],
+                                          )
+                                        else
+                                          SizedBox(
+                                            width: double.infinity,
+                                            child: ElevatedButton.icon(
+                                              onPressed: isBusy ? null : startEntryFeePayment,
+                                              icon: const Icon(Icons.payment),
+                                              label: Text("Pay ₦$entryFeeAmount to Join"),
+                                            ),
+                                          ),
+                                        const SizedBox(height: 10),
+                                        SizedBox(
+                                          width: double.infinity,
+                                          child: OutlinedButton(
+                                            onPressed: isBusy || !hasJoined ? null : leaveLobby,
+                                            child: const Text("Leave lobby"),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
 
-                            if (isWide) {
-                              return Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(child: accountCard),
-                                  const SizedBox(width: 18),
-                                  Expanded(child: lobbyCard),
-                                ],
-                              );
-                            }
-                            return Column(children: [
-                              accountCard,
-                              const SizedBox(height: 14),
-                              lobbyCard,
-                            ]);
-                          }),
+                          const SizedBox(height: 18),
 
-                                                    // Add item
+                          // Add item
                           Card(
                             elevation: 0,
                             child: Padding(
@@ -1088,107 +1042,24 @@ class _LobbyScreenState extends State<LobbyScreen> {
                                           color: Color(0xFF101828))),
                                   const SizedBox(height: 6),
                                   const Text(
-                                      "Paste your product link and the guest price. Pay for it to lock it into the vault.",
+                                      "Paste your product link and amount. Then pay for it to count toward the vault goal.",
                                       style: TextStyle(color: Color(0xFF667085))),
-                                  const SizedBox(height: 14),
-
-                                  // ── Guest price notice ────────────────────────────────
-                                  Container(
-                                    padding: const EdgeInsets.all(14),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFFF7E6),
-                                      borderRadius: BorderRadius.circular(14),
-                                      border: Border.all(color: const Color(0xFFFAC515)),
-                                    ),
-                                    child: const Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Icon(Icons.warning_amber_rounded,
-                                                size: 18, color: Color(0xFFB54708)),
-                                            SizedBox(width: 8),
-                                            Text("Use guest (logged-out) pricing",
-                                                style: TextStyle(
-                                                    fontWeight: FontWeight.w800,
-                                                    fontSize: 14,
-                                                    color: Color(0xFF7A2E0E))),
-                                          ],
-                                        ),
-                                        SizedBox(height: 8),
-                                        Text(
-                                          "UniCart standardises all prices to non-personalised (guest) pricing."
-
-                                          "Before submitting your item:"
-
-                                          "  • Log OUT of Temu (or any other platform) "
-
-                                          "  • Open the product page in a private/incognito window"
-
-                                          "  • Enter the price you see as a guest"
-
-
-                                          "Submitting a personalised or discounted price that differs from "
-                                          "the standard guest price is considered a pricing violation and "
-                                          "may result in your item being forcefully removed with no refund.",
-                                          style: TextStyle(
-                                              fontSize: 13,
-                                              color: Color(0xFF7A2E0E),
-                                              height: 1.5),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-
-                                  const SizedBox(height: 14),
-
-                                  // ── No-refund notice ──────────────────────────────────
-                                  Container(
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFEF3F2),
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(color: const Color(0xFFFECACA)),
-                                    ),
-                                    child: const Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Icon(Icons.gavel_outlined,
-                                            size: 16, color: Color(0xFFB42318)),
-                                        SizedBox(width: 8),
-                                        Expanded(
-                                          child: Text(
-                                            "No-Refund Policy: Once your item payment is submitted, "
-                                            "it is non-refundable. Items removed for pricing violations "
-                                            "or fraud will not be refunded under any circumstance.",
-                                            style: TextStyle(
-                                                fontSize: 12,
-                                                color: Color(0xFFB42318),
-                                                fontWeight: FontWeight.w600,
-                                                height: 1.5),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-
                                   const SizedBox(height: 16),
                                   TextField(
                                     controller: itemLinkController,
                                     decoration: const InputDecoration(
-                                      labelText: "Product link",
+                                      labelText: "Item link",
                                       prefixIcon: Icon(Icons.link),
-                                      helperText: "Copy the link from a guest / logged-out browser session",
+                                      hintText: "https://www.temu.com"
                                     ),
                                   ),
                                   const SizedBox(height: 12),
                                   TextField(
                                     controller: itemAmountController,
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    keyboardType: TextInputType.number,
                                     decoration: const InputDecoration(
-                                      labelText: "Guest price (₦)",
+                                      labelText: "Item amount (₦)",
                                       prefixIcon: Icon(Icons.payments_outlined),
-                                      helperText: "Price shown to logged-out visitors only",
                                     ),
                                   ),
                                   const SizedBox(height: 14),
