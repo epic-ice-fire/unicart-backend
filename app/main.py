@@ -1,4 +1,3 @@
-python -c 
 content = '''import logging
 import os
 import time
