@@ -1,6 +1,6 @@
 {
-    "name": "unicart_app",
-    "short_name": "unicart_app",
+    "name": "unicart-by tekena",
+    "short_name": "unicart-by tekena",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
