@@ -15,11 +15,11 @@ class Lobby {
 
   factory Lobby.fromJson(Map<String, dynamic> json) {
     return Lobby(
-      lobbyId: json["lobby_id"] as int,
-      status: json["status"] as String,
-      currentItemAmount: json["current_item_amount"] as int,
-      targetItemAmount: json["target_item_amount"] as int,
-      memberCount: json["member_count"] as int,
+      lobbyId: (json["lobby_id"] as num?)?.toInt() ?? 0,
+      status: json["status"]?.toString() ?? "open",
+      currentItemAmount: (json["current_item_amount"] as num?)?.toInt() ?? 0,
+      targetItemAmount: (json["target_item_amount"] as num?)?.toInt() ?? 0,
+      memberCount: (json["member_count"] as num?)?.toInt() ?? 0,
     );
   }
 }

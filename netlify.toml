@@ -1,0 +1,12 @@
+[build]
+  base    = "unicart_app"
+  command = "flutter pub get && flutter build web --release --base-href /"
+  publish = "build/web"
+
+[build.environment]
+  FLUTTER_VERSION = "3.29.2"
+
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
