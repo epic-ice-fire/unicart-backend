@@ -132,9 +132,17 @@ class _LobbyScreenState extends State<LobbyScreen> {
       final authUrl = response["authorization_url"]?.toString();
       setState(() { pendingPaymentReference = reference; pendingPaymentUrl = authUrl; });
       if (authUrl != null && authUrl.isNotEmpty) {
-        final launched = await launchUrl(Uri.parse(authUrl),
-            mode: LaunchMode.platformDefault, webOnlyWindowName: "_blank");
         _startPolling();
+        // On Safari, webOnlyWindowName "_blank" is blocked.
+        // We open in same tab on mobile browsers — callback redirects back.
+        final uri = Uri.parse(authUrl);
+        bool launched = false;
+        try {
+          launched = await launchUrl(uri, webOnlyWindowName: "_blank");
+          if (!launched) launched = await launchUrl(uri);
+        } catch (_) {
+          launched = await launchUrl(uri);
+        }
         showMessage(launched
             ? "Paystack opened. Pay then tap \"I've Paid\" when you return."
             : "Could not open Paystack. Tap \"Open Paystack\" below to try again.");
@@ -167,8 +175,10 @@ class _LobbyScreenState extends State<LobbyScreen> {
     if (pendingPaymentUrl == null || pendingPaymentUrl!.isEmpty) {
       showMessage("No payment link. Tap Pay to get a new one."); return;
     }
-    await launchUrl(Uri.parse(pendingPaymentUrl!),
-        mode: LaunchMode.platformDefault, webOnlyWindowName: "_blank");
+    final uri2 = Uri.parse(pendingPaymentUrl!);
+    try {
+      if (!await launchUrl(uri2, webOnlyWindowName: "_blank")) await launchUrl(uri2);
+    } catch (_) { await launchUrl(uri2); }
   }
 
   Future<void> leaveLobby() async {
@@ -200,7 +210,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
     }
     setState(() => isBusy = true);
     try {
-      final response = await LobbyService.addItem(widget.token, itemLink: itemLink, itemAmount: amount.toInt());
+      final response = await LobbyService.addItem(widget.token, itemLink: itemLink, itemAmount: (amount * 100).toInt());
       itemLinkController.clear(); itemAmountController.clear();
       await loadAll();
       showMessage(response["message"]?.toString() ?? "Item added. Pay for it to lock it in.", isSuccess: true);
@@ -250,10 +260,14 @@ class _LobbyScreenState extends State<LobbyScreen> {
       final response = await LobbyService.initializeItemPayment(widget.token, itemId: itemId);
       final authUrl = response["authorization_url"]?.toString();
       if (authUrl != null && authUrl.isNotEmpty) {
-        final launched = await launchUrl(Uri.parse(authUrl),
-            mode: LaunchMode.platformDefault, webOnlyWindowName: "_blank");
         _startPolling();
-        showMessage(launched
+        final itemUri = Uri.parse(authUrl);
+        bool itemLaunched = false;
+        try {
+          itemLaunched = await launchUrl(itemUri, webOnlyWindowName: "_blank");
+          if (!itemLaunched) itemLaunched = await launchUrl(itemUri);
+        } catch (_) { itemLaunched = await launchUrl(itemUri); }
+        showMessage(itemLaunched
             ? "Paystack opened. Come back and tap \"Verify payment\" once done."
             : "Could not open Paystack. Try again.");
       }
@@ -416,7 +430,8 @@ class _LobbyScreenState extends State<LobbyScreen> {
     final isVerified = meData?["is_student_verified"] == true;
     final isAdmin    = meData?["is_admin"] == true;
     final studentEmail = meData?["student_pau_email"]?.toString();
-    final accountEmail = meData?["email"]?.toString() ?? "Unknown";
+    final accountEmail = meData?["email"]?.toString() ?? 
+        (isLoading ? "Loading..." : "Connecting...");
 
     final myItemCount       = myItemsData?["item_count"] ?? 0;
     final myTotalItemAmount = myItemsData?["total_item_amount"] ?? 0;
@@ -430,6 +445,13 @@ class _LobbyScreenState extends State<LobbyScreen> {
     final hasJoined        = mainDetailsData?["has_joined"] == true;
     final hasPendingPayment = mainDetailsData?["has_pending_payment"] == true;
     final entryFeeAmount   = mainDetailsData?["entry_fee_amount"] ?? 2000;
+
+    // If meData is null but we're not loading, backend is waking up — retry
+    if (meData == null && !isLoading) {
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted && meData == null) loadAll(silent: true);
+      });
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -529,48 +551,63 @@ class _LobbyScreenState extends State<LobbyScreen> {
                             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Color(0xFF101828))),
                         const SizedBox(height: 14),
                         // Avatar + info row
-                        Row(children: [
+                        if (meData == null && !isLoading) ...[
                           Container(
-                            width: 48, height: 48,
-                            decoration: BoxDecoration(color: const Color(0xFF1F7A4C), borderRadius: BorderRadius.circular(14)),
-                            child: Center(child: Text(
-                              accountEmail.isNotEmpty ? accountEmail[0].toUpperCase() : "?",
-                              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
-                            )),
-                          ),
-                          const SizedBox(width: 14),
-                          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text(accountEmail,
-                                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF101828)),
-                                overflow: TextOverflow.ellipsis),
-                            const SizedBox(height: 6),
-                            Wrap(spacing: 6, runSpacing: 4, children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                    color: isVerified ? const Color(0xFFECFDF3) : const Color(0xFFFEF3F2),
-                                    borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(color: isVerified ? const Color(0xFF4BB543) : const Color(0xFFFECACA))),
-                                child: Text(isVerified ? "✅ PAU Verified" : "❌ Not verified",
-                                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
-                                        color: isVerified ? const Color(0xFF027A48) : const Color(0xFFB42318))),
-                              ),
-                              if (isAdmin) Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(color: const Color(0xFFF4F3FF),
-                                    borderRadius: BorderRadius.circular(999), border: Border.all(color: const Color(0xFF9E77ED))),
-                                child: const Text("👑 Admin",
-                                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF5925DC))),
-                              ),
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(color: const Color(0xFFEFF8FF),
+                                borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFF53B1FD))),
+                            child: const Row(children: [
+                              SizedBox(width: 18, height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF175CD3))),
+                              SizedBox(width: 10),
+                              Expanded(child: Text("Connecting to server... please wait a moment.",
+                                  style: TextStyle(color: Color(0xFF175CD3), fontSize: 13, fontWeight: FontWeight.w600))),
                             ]),
-                            if (studentEmail != null) ...[
-                              const SizedBox(height: 4),
-                              Text("🎓 $studentEmail",
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF667085)),
+                          ),
+                        ] else ...[
+                          Row(children: [
+                            Container(
+                              width: 48, height: 48,
+                              decoration: BoxDecoration(color: const Color(0xFF1F7A4C), borderRadius: BorderRadius.circular(14)),
+                              child: Center(child: Text(
+                                accountEmail.isNotEmpty && accountEmail != "Connecting..." ? accountEmail[0].toUpperCase() : "U",
+                                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
+                              )),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(accountEmail,
+                                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF101828)),
                                   overflow: TextOverflow.ellipsis),
-                            ],
-                          ])),
-                        ]),
+                              const SizedBox(height: 6),
+                              Wrap(spacing: 6, runSpacing: 4, children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                      color: isVerified ? const Color(0xFFECFDF3) : const Color(0xFFFEF3F2),
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(color: isVerified ? const Color(0xFF4BB543) : const Color(0xFFFECACA))),
+                                  child: Text(isVerified ? "✅ PAU Verified" : "❌ Not verified",
+                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                                          color: isVerified ? const Color(0xFF027A48) : const Color(0xFFB42318))),
+                                ),
+                                if (isAdmin) Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(color: const Color(0xFFF4F3FF),
+                                      borderRadius: BorderRadius.circular(999), border: Border.all(color: const Color(0xFF9E77ED))),
+                                  child: const Text("👑 Admin",
+                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF5925DC))),
+                                ),
+                              ]),
+                              if (studentEmail != null) ...[
+                                const SizedBox(height: 4),
+                                Text("🎓 $studentEmail",
+                                    style: const TextStyle(fontSize: 11, color: Color(0xFF667085)),
+                                    overflow: TextOverflow.ellipsis),
+                              ],
+                            ])),
+                          ]),
+                        ],
                         const SizedBox(height: 14),
                         SizedBox(width: double.infinity, child: ElevatedButton(
                           onPressed: isBusy ? null : openVerifyScreen,

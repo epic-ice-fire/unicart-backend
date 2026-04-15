@@ -523,9 +523,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                 const SizedBox(height: 8),
                 const Text(
                   "✅  I am logged OUT of Temu (or in a private window)"
+
                   "✅  I have checked each item link above as a guest"
+
                   "✅  The submitted prices match what I see as a guest"
+
                   "✅  Any price discrepancies have been resolved (force-removed)"
+                  
                   "✅  I am ready to place the group order",
                   style: TextStyle(
                       fontSize: 13, color: Color(0xFF344054), height: 1.7),
