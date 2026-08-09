@@ -1,0 +1,18 @@
+.env
+__pycache__/
+
+# Flutter
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+.pub-cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
