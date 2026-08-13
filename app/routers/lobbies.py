@@ -1,10 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, desc, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user, require_verified_student, require_admin
@@ -36,6 +38,9 @@ ADMIN_EMAIL = settings.ADMIN_EMAIL
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 def build_item_label(item: LobbyItem) -> str:
     if not item.is_active:
@@ -77,6 +82,15 @@ async def get_current_open_main_lobby_or_create(db: AsyncSession) -> Lobby:
     if lobby:
         return lobby
     lobby = await create_open_main_lobby(db)
+    await record_audit_event(
+        db,
+        event_type="SYSTEM_MAIN_LOBBY_CREATED",
+        lobby_id=lobby.id,
+        details={
+            "target_item_amount": lobby.target_item_amount,
+            "source": "auto_create",
+        },
+    )
     await db.commit()
     await db.refresh(lobby)
     return lobby
@@ -121,7 +135,7 @@ async def auto_remove_unpaid_items_on_trigger(db: AsyncSession, lobby: Lobby) ->
         )
     ).scalars().all()
 
-    now = datetime.utcnow()
+    now = _utcnow()
     for item in unpaid_items:
         item.is_active = False
         item.removed_at = now
@@ -260,6 +274,11 @@ def _make_item_response(item: LobbyItem) -> MyLobbyItemResponse:
         item_payment_status=item.item_payment_status.value,
         item_payment_amount_ngn=item.item_payment_amount_ngn,
         item_payment_reference=item.item_payment_reference,
+        item_payment_authorization_url=(
+            item.item_payment_authorization_url
+            if item.item_payment_status == ItemPaymentStatus.pending
+            else None
+        ),
         item_label=build_item_label(item),
         created_at=item.created_at.isoformat(),
         removed_at=item.removed_at.isoformat() if item.removed_at else None,
@@ -317,20 +336,33 @@ def _build_admin_batch(
 # ─── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/create_main", response_model=CreateMainLobbyResponse)
-async def create_main_lobby(db: AsyncSession = Depends(get_db)):
+async def create_main_lobby(
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
     existing_open = await get_current_open_main_lobby(db)
     if existing_open:
         return CreateMainLobbyResponse(
             message="Main open lobby already exists", lobby_id=existing_open.id,
         )
     lobby = await create_open_main_lobby(db)
+    await record_audit_event(
+        db,
+        event_type="ADMIN_MAIN_LOBBY_CREATED",
+        actor_user_id=admin_user.id,
+        lobby_id=lobby.id,
+        details={"target_item_amount": lobby.target_item_amount},
+    )
     await db.commit()
     await db.refresh(lobby)
     return CreateMainLobbyResponse(message="Main lobby created", lobby_id=lobby.id)
 
 
 @router.get("/main", response_model=LobbySnapshotResponse)
-async def main_lobby_snapshot(db: AsyncSession = Depends(get_db)):
+async def main_lobby_snapshot(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     lobby = await get_current_open_main_lobby_or_create(db)
     await recalculate_lobby_totals(db, lobby)
     await db.commit()
@@ -360,37 +392,63 @@ async def main_lobby_details(
         )
     ).scalar_one_or_none()
 
+    latest_left_pass = (
+        await db.execute(
+            select(LobbyPass)
+            .where(
+                LobbyPass.lobby_id == lobby.id,
+                LobbyPass.user_id == user.id,
+                LobbyPass.status == PassStatus.left,
+                LobbyPass.left_at.is_not(None),
+            )
+            .order_by(desc(LobbyPass.left_at), desc(LobbyPass.id))
+        )
+    ).scalars().first()
+    payment_cutoff = latest_left_pass.left_at if latest_left_pass else None
+
+    pending_conditions = [
+        PaymentTransaction.lobby_id == lobby.id,
+        PaymentTransaction.user_id == user.id,
+        PaymentTransaction.status == PaymentStatus.pending,
+    ]
+    if payment_cutoff:
+        pending_conditions.append(PaymentTransaction.created_at > payment_cutoff)
+
     pending_payment = (
         await db.execute(
             select(PaymentTransaction)
-            .where(
-                PaymentTransaction.lobby_id == lobby.id,
-                PaymentTransaction.user_id == user.id,
-                PaymentTransaction.status == PaymentStatus.pending,
-            )
+            .where(*pending_conditions)
             .order_by(desc(PaymentTransaction.id))
         )
     ).scalars().first()
+
+    latest_conditions = [
+        PaymentTransaction.lobby_id == lobby.id,
+        PaymentTransaction.user_id == user.id,
+    ]
+    if payment_cutoff:
+        latest_conditions.append(PaymentTransaction.created_at > payment_cutoff)
 
     latest_payment = (
         await db.execute(
             select(PaymentTransaction)
-            .where(
-                PaymentTransaction.lobby_id == lobby.id,
-                PaymentTransaction.user_id == user.id,
-            )
+            .where(*latest_conditions)
             .order_by(desc(PaymentTransaction.id))
         )
     ).scalars().first()
 
+    successful_conditions = [
+        PaymentTransaction.lobby_id == lobby.id,
+        PaymentTransaction.user_id == user.id,
+        PaymentTransaction.status == PaymentStatus.success,
+    ]
+    if payment_cutoff:
+        successful_conditions.append(PaymentTransaction.paid_at > payment_cutoff)
+
     successful_payment = (
         await db.execute(
             select(PaymentTransaction)
-            .where(
-                PaymentTransaction.lobby_id == lobby.id,
-                PaymentTransaction.user_id == user.id,
-                PaymentTransaction.status == PaymentStatus.success,
-            )
+            .where(*successful_conditions)
             .order_by(desc(PaymentTransaction.id))
         )
     ).scalars().first()
@@ -430,6 +488,9 @@ async def main_lobby_details(
         entry_fee_amount=settings.ENTRY_FEE_NGN,
         has_pending_payment=pending_payment is not None,
         pending_payment_reference=pending_payment.reference if pending_payment else None,
+        pending_payment_authorization_url=(
+            pending_payment.paystack_authorization_url if pending_payment else None
+        ),
         latest_payment_status=latest_payment.status.value if latest_payment else None,
         latest_payment_reference=latest_payment.reference if latest_payment else None,
         has_successful_payment_for_current_lobby=successful_payment is not None,
@@ -455,14 +516,33 @@ async def join_main_lobby(
     if existing_pass:
         raise HTTPException(409, "You already joined the main lobby.")
 
+    latest_left_pass = (
+        await db.execute(
+            select(LobbyPass)
+            .where(
+                LobbyPass.lobby_id == lobby.id,
+                LobbyPass.user_id == user.id,
+                LobbyPass.status == PassStatus.left,
+                LobbyPass.left_at.is_not(None),
+            )
+            .order_by(desc(LobbyPass.left_at), desc(LobbyPass.id))
+        )
+    ).scalars().first()
+
+    successful_conditions = [
+        PaymentTransaction.lobby_id == lobby.id,
+        PaymentTransaction.user_id == user.id,
+        PaymentTransaction.status == PaymentStatus.success,
+    ]
+    if latest_left_pass and latest_left_pass.left_at:
+        successful_conditions.append(
+            PaymentTransaction.paid_at > latest_left_pass.left_at
+        )
+
     successful_payment = (
         await db.execute(
             select(PaymentTransaction)
-            .where(
-                PaymentTransaction.lobby_id == lobby.id,
-                PaymentTransaction.user_id == user.id,
-                PaymentTransaction.status == PaymentStatus.success,
-            )
+            .where(*successful_conditions)
             .order_by(desc(PaymentTransaction.id))
         )
     ).scalars().first()
@@ -474,10 +554,39 @@ async def join_main_lobby(
         lobby_id=lobby.id, user_id=user.id,
         entry_fee_amount=settings.ENTRY_FEE_NGN,
         status=PassStatus.active,
-        paid_at=successful_payment.paid_at or datetime.utcnow(),
+        paid_at=successful_payment.paid_at or _utcnow(),
     )
-    db.add(new_pass)
-    await db.flush()
+    created_pass = True
+    try:
+        async with db.begin_nested():
+            db.add(new_pass)
+            await db.flush()
+    except IntegrityError:
+        # Callback/webhook may have created the membership at the same moment.
+        concurrent_pass = (
+            await db.execute(
+                select(LobbyPass).where(
+                    LobbyPass.lobby_id == lobby.id,
+                    LobbyPass.user_id == user.id,
+                    LobbyPass.status == PassStatus.active,
+                )
+            )
+        ).scalar_one_or_none()
+        if not concurrent_pass:
+            raise
+        created_pass = False
+
+    if created_pass:
+        await record_audit_event(
+            db,
+            event_type="LOBBY_PASS_CREATED",
+            subject_user_id=user.id,
+            lobby_id=lobby.id,
+            payment_reference=successful_payment.reference,
+            amount_ngn=successful_payment.amount_ngn,
+            details={"source": "join_endpoint"},
+        )
+
     await recalculate_lobby_totals(db, lobby)
     await db.commit()
     await db.refresh(lobby)
@@ -571,7 +680,7 @@ async def remove_my_item_from_main_lobby(
         )
 
     item.is_active = False
-    item.removed_at = datetime.utcnow()
+    item.removed_at = _utcnow()
     await db.flush()
     await recalculate_lobby_totals(db, lobby)
     await db.commit()
@@ -593,6 +702,7 @@ async def remove_my_item_from_main_lobby(
 )
 async def admin_force_remove_item(
     item_id: int,
+    reason: str = Query(default="Policy violation", min_length=3, max_length=500),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -613,6 +723,10 @@ async def admin_force_remove_item(
       if the item was paid).
     - Admin receives an audit log email.
     """
+    reason = " ".join(reason.split()).strip()
+    if len(reason) < 3:
+        raise HTTPException(400, "A removal reason is required.")
+
     item = (
         await db.execute(select(LobbyItem).where(LobbyItem.id == item_id))
     ).scalar_one_or_none()
@@ -638,7 +752,7 @@ async def admin_force_remove_item(
     lobby_id = item.lobby_id
 
     item.is_active = False
-    item.removed_at = datetime.utcnow()
+    item.removed_at = _utcnow()
     await db.flush()
 
     if lobby:
@@ -658,6 +772,21 @@ async def admin_force_remove_item(
             lobby.current_item_amount = item_total_result.scalar_one() or 0
             # lobby.status intentionally not changed
 
+    await record_audit_event(
+        db,
+        event_type="ADMIN_ITEM_REMOVED",
+        actor_user_id=admin_user.id,
+        subject_user_id=item.user_id,
+        lobby_id=lobby_id,
+        item_id=item_id,
+        payment_reference=item.item_payment_reference,
+        amount_ngn=item_amount,
+        details={
+            "was_paid": was_paid,
+            "lobby_status": lobby.status.value if lobby else "unknown",
+            "reason": reason,
+        },
+    )
     await db.commit()
 
     logger.warning(
@@ -718,6 +847,7 @@ async def admin_force_remove_item(
         "item_amount": item_amount,
         "was_paid": was_paid,
         "removed_by": admin_user.email,
+        "reason": reason,
         "user_notified": owner_email is not None,
         "lobby_status": lobby.status.value if lobby else "unknown",
         # Tells the admin dashboard: this batch is now below its original target
@@ -911,8 +1041,21 @@ async def admin_update_open_lobby_target(
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db)
+    old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
+
+    await record_audit_event(
+        db,
+        event_type="ADMIN_LOBBY_TARGET_CHANGED",
+        actor_user_id=admin_user.id,
+        lobby_id=lobby.id,
+        details={
+            "old_target_item_amount": old_target,
+            "new_target_item_amount": payload.target_item_amount,
+            "resulting_status": lobby.status.value,
+        },
+    )
 
     if lobby.status == LobbyStatus.triggered:
         await auto_remove_unpaid_items_on_trigger(db, lobby)
@@ -958,11 +1101,46 @@ async def admin_update_batch_status(
     if not lobby:
         raise HTTPException(404, "Batch not found.")
 
-    lobby.status = new_status
-    await db.commit()
-    await db.refresh(lobby)
+    if new_status == lobby.status:
+        # Idempotent retry: do not resend customer status emails.
+        pass
+    else:
+        next_status = {
+            LobbyStatus.triggered: LobbyStatus.processing,
+            LobbyStatus.processing: LobbyStatus.in_transit,
+            LobbyStatus.in_transit: LobbyStatus.completed,
+        }.get(lobby.status)
 
-    await send_status_update_emails(db, lobby)
+        if next_status is None or new_status != next_status:
+            raise HTTPException(
+                409,
+                f"Invalid status transition: {lobby.status.value} -> {new_status.value}. "
+                f"Expected next status: {next_status.value if next_status else 'none' }.",
+            )
+
+        old_status = lobby.status
+        lobby.status = new_status
+        await record_audit_event(
+            db,
+            event_type="ADMIN_BATCH_STATUS_CHANGED",
+            actor_user_id=admin_user.id,
+            lobby_id=lobby.id,
+            details={
+                "old_status": old_status.value,
+                "new_status": new_status.value,
+            },
+        )
+        await db.commit()
+        await db.refresh(lobby)
+
+        logger.warning(
+            "ADMIN BATCH STATUS — lobby_id=%s old=%s new=%s changed_by=%s",
+            lobby.id,
+            old_status.value,
+            new_status.value,
+            admin_user.email,
+        )
+        await send_status_update_emails(db, lobby)
 
     rows = (
         await db.execute(
@@ -1024,7 +1202,7 @@ async def leave_main_lobby(
         )
 
     active_pass.status = PassStatus.left
-    active_pass.left_at = datetime.utcnow()
+    active_pass.left_at = _utcnow()
 
     user_items = (
         await db.execute(
@@ -1037,10 +1215,18 @@ async def leave_main_lobby(
 
     for item in user_items:
         item.is_active = False
-        item.removed_at = datetime.utcnow()
+        item.removed_at = _utcnow()
 
     await db.flush()
     await recalculate_lobby_totals(db, lobby)
+    await record_audit_event(
+        db,
+        event_type="LOBBY_PASS_LEFT",
+        actor_user_id=user.id,
+        subject_user_id=user.id,
+        lobby_id=lobby.id,
+        details={"entry_fee_non_refundable": True},
+    )
     await db.commit()
     await db.refresh(lobby)
 
@@ -1059,9 +1245,21 @@ async def update_main_target(
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db)
+    old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
     await maybe_open_next_main_lobby(db, lobby)
+    await record_audit_event(
+        db,
+        event_type="ADMIN_LOBBY_TARGET_CHANGED",
+        actor_user_id=admin_user.id,
+        lobby_id=lobby.id,
+        details={
+            "old_target_item_amount": old_target,
+            "new_target_item_amount": payload.target_item_amount,
+            "route": "main_target",
+        },
+    )
     await db.commit()
     await db.refresh(lobby)
     return LobbySnapshotResponse(

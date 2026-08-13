@@ -1,13 +1,44 @@
-from pydantic import BaseModel, EmailStr, Field
+import ipaddress
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # =========================
 # AUTH SCHEMAS
 # =========================
 
+_COMMON_PASSWORDS = {
+    "password123",
+    "password1234",
+    "123456789012",
+    "qwertyuiop12",
+    "letmein123456",
+    "admin12345678",
+    "unicart123456",
+}
+
+
+def _validate_new_password(value: str) -> str:
+    if len(value) < 12:
+        raise ValueError("Password must be at least 12 characters.")
+    if len(value) > 128:
+        raise ValueError("Password must be at most 128 characters.")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError("Password cannot contain control characters.")
+    if value.lower() in _COMMON_PASSWORDS:
+        raise ValueError("Choose a less common password.")
+    return value
+
+
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return _validate_new_password(value)
 
 
 class LoginRequest(BaseModel):
@@ -18,6 +49,16 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        return _validate_new_password(value)
 
 
 class MeResponse(BaseModel):
@@ -33,7 +74,7 @@ class PauLinkRequest(BaseModel):
 
 
 class PauVerifyRequest(BaseModel):
-    code: str = Field(min_length=4, max_length=12)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class PauLinkResponse(BaseModel):
@@ -129,6 +170,7 @@ class MainLobbyDetailsResponse(BaseModel):
     entry_fee_amount: int
     has_pending_payment: bool
     pending_payment_reference: str | None
+    pending_payment_authorization_url: str | None = None
     latest_payment_status: str | None
     latest_payment_reference: str | None
     has_successful_payment_for_current_lobby: bool
@@ -147,9 +189,53 @@ class JoinLobbyResponse(BaseModel):
 
 
 class AddItemRequest(BaseModel):
-    # No max_length — Temu links can be very long
-    item_link: str = Field(min_length=5)
-    item_amount: int = Field(gt=0)
+    item_link: str = Field(min_length=8, max_length=2048)
+    item_amount: int = Field(gt=0, le=10_000_000)
+
+    @field_validator("item_link")
+    @classmethod
+    def validate_public_product_url(cls, value: str) -> str:
+        url = value.strip()
+        if any(ch in url for ch in ("\r", "\n", "\t")):
+            raise ValueError("Product link contains invalid control characters.")
+
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            raise ValueError("Product link must start with http:// or https://.")
+        if not parsed.hostname:
+            raise ValueError("Product link must contain a valid hostname.")
+        if parsed.username or parsed.password:
+            raise ValueError("Product links containing embedded credentials are not allowed.")
+
+        hostname = parsed.hostname.rstrip(".").lower()
+        if len(hostname) > 253:
+            raise ValueError("Product link hostname is too long.")
+        if any(ord(ch) > 127 for ch in hostname):
+            raise ValueError("Internationalized/Unicode product hostnames are not allowed.")
+        if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
+            raise ValueError("Local/private product links are not allowed.")
+
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("Product link contains an invalid port.") from exc
+
+        try:
+            ip = ipaddress.ip_address(hostname)
+        except ValueError:
+            ip = None
+
+        if ip and (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError("Private or local-network product links are not allowed.")
+
+        return url
 
 
 class AddItemResponse(BaseModel):
@@ -177,7 +263,7 @@ class LeaveLobbyResponse(BaseModel):
 
 
 class UpdateTargetRequest(BaseModel):
-    target_item_amount: int = Field(gt=0)
+    target_item_amount: int = Field(gt=0, le=100_000_000)
 
 
 class MyLobbyItemResponse(BaseModel):
@@ -190,6 +276,7 @@ class MyLobbyItemResponse(BaseModel):
     item_payment_status: str
     item_payment_amount_ngn: int
     item_payment_reference: str | None
+    item_payment_authorization_url: str | None = None
     item_label: str
     created_at: str
     removed_at: str | None
@@ -248,6 +335,8 @@ class AdminBatchEntryResponse(BaseModel):
     paid_member_count: int
     paid_total_ngn: int
     created_at: str
+    is_underfunded: bool = False
+    underfunded_gap: int = 0
     items: list[AdminBatchItemResponse]
 
 
@@ -255,3 +344,39 @@ class AdminDashboardResponse(BaseModel):
     current_open_lobby: LobbySnapshotResponse
     triggered_batch_count: int
     triggered_batches: list[AdminBatchEntryResponse]
+
+# =========================
+# FINANCIAL INTEGRITY / ADMIN
+# =========================
+
+class PaymentReconciliationResponse(BaseModel):
+    reference: str
+    payment_kind: str
+    unicart_status: str
+    expected_amount_ngn: int
+    flutterwave_status: str
+    flutterwave_amount_ngn: str | None
+    flutterwave_currency: str | None
+    gateway_transaction_id: str | None
+    gateway_claimed: bool
+    matches: bool
+    issues: list[str]
+
+
+class FinancialAuditEventResponse(BaseModel):
+    id: int
+    event_type: str
+    actor_user_id: int | None
+    subject_user_id: int | None
+    lobby_id: int | None
+    item_id: int | None
+    payment_reference: str | None
+    gateway_transaction_id: str | None
+    amount_ngn: int | None
+    details_json: str
+    created_at: str
+
+
+class FinancialAuditListResponse(BaseModel):
+    event_count: int
+    events: list[FinancialAuditEventResponse]
