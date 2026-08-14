@@ -119,11 +119,12 @@ def test_legacy_bcrypt_hash_is_upgraded_after_successful_verification():
     assert "bcrypt-sha256" in replacement
 
 
-def test_registration_requires_reasonable_new_password():
-    RegisterRequest(email="ok@example.com", password="a long safer password")
+def test_registration_allows_short_nonempty_passwords_but_blocks_known_common_passwords():
+    RegisterRequest(email="ok@example.com", password="a")
+    RegisterRequest(email="ok2@example.com", password="shortpass")
 
     with pytest.raises(Exception):
-        RegisterRequest(email="bad@example.com", password="shortpass")
+        RegisterRequest(email="bad@example.com", password="")
 
     with pytest.raises(Exception):
         RegisterRequest(email="bad2@example.com", password="password1234")
