@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta, timezone
+﻿from datetime import datetime, timedelta, timezone
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -381,7 +382,8 @@ async def request_pau_code(
     email_sent = False
     if settings.GMAIL_USER and settings.GMAIL_APP_PASSWORD:
         try:
-            send_pau_verification_code(
+            await asyncio.to_thread(
+                send_pau_verification_code,
                 pau_email=pau_email,
                 code=code,
                 expires_minutes=expires_minutes,
