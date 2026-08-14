@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import asyncio
 import hashlib
 import hmac
@@ -382,13 +382,14 @@ async def request_pau_code(
     email_sent = False
     if settings.GMAIL_USER and settings.GMAIL_APP_PASSWORD:
         try:
-            await asyncio.to_thread(
-                send_pau_verification_code,
-                pau_email=pau_email,
-                code=code,
-                expires_minutes=expires_minutes,
+            email_sent = bool(
+                await asyncio.to_thread(
+                    send_pau_verification_code,
+                    pau_email=pau_email,
+                    code=code,
+                    expires_minutes=expires_minutes,
+                )
             )
-            email_sent = True
         except Exception:
             logger.exception("Failed to send PAU verification email for user_id=%s", user.id)
 

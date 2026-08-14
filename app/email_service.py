@@ -119,7 +119,7 @@ def send_pau_verification_code(
     pau_email: str,
     code: str,
     expires_minutes: int,
-) -> None:
+) -> bool:
     subject = "Your UniCart student verification code"
     content = f"""
     <div class="header">
@@ -140,7 +140,7 @@ def send_pau_verification_code(
       Do not share this code with anyone.
     </p>
     """
-    _send(pau_email, subject, _base_template(content))
+    return _send(pau_email, subject, _base_template(content))
 
 
 # ─── Admin: Item force-removed notification ────────────────────────────────────
