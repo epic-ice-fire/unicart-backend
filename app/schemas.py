@@ -20,8 +20,6 @@ _COMMON_PASSWORDS = {
 
 
 def _validate_new_password(value: str) -> str:
-    if len(value) < 12:
-        raise ValueError("Password must be at least 12 characters.")
     if len(value) > 128:
         raise ValueError("Password must be at most 128 characters.")
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
@@ -33,7 +31,7 @@ def _validate_new_password(value: str) -> str:
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
 
     @field_validator("password")
     @classmethod
@@ -53,7 +51,7 @@ class TokenResponse(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=128)
-    new_password: str = Field(min_length=12, max_length=128)
+    new_password: str = Field(min_length=1, max_length=128)
 
     @field_validator("new_password")
     @classmethod
