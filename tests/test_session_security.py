@@ -6,6 +6,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-for-unicart-tests")
 os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("MAX_ACTIVE_SESSIONS_PER_USER", "5")
+os.environ.setdefault("REMEMBERED_SESSION_DAYS", "30")
 
 import pytest
 import pytest_asyncio
@@ -19,6 +20,7 @@ from app.models import AuthSession, User
 from app.schemas import RegisterRequest
 from app.security import (
     create_access_token,
+    decode_token,
     hash_session_jti,
     new_session_jti,
     verify_password_and_update,
@@ -103,6 +105,21 @@ async def test_jwt_without_matching_server_session_is_rejected(db_session):
     with pytest.raises(HTTPException) as exc:
         await get_current_session(token=token, db=db_session)
     assert exc.value.status_code == 401
+
+
+def test_custom_expiry_supports_remembered_sessions():
+    token = create_access_token(
+        {"sub": "123"},
+        jti=new_session_jti(),
+        expires_minutes=30 * 24 * 60,
+    )
+    payload = decode_token(token)
+
+    issued_at = datetime.fromtimestamp(payload["iat"], tz=timezone.utc)
+    expires_at = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+    lifetime = expires_at - issued_at
+
+    assert timedelta(days=29, hours=23) <= lifetime <= timedelta(days=30, minutes=1)
 
 
 def test_legacy_bcrypt_hash_is_upgraded_after_successful_verification():
