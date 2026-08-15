@@ -1,0 +1,40 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENVIRONMENT: development
+      DATABASE_URL: sqlite+aiosqlite:///:memory:
+      SECRET_KEY: ci-secret-key-that-is-long-enough-for-unicart-tests
+      DEBUG_RETURN_PAU_CODE: "false"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run hardened backend tests
+        run: python -m pytest -q
+
+      - name: Run security preflight
+        run: python scripts/security_preflight.py
