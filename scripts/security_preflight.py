@@ -16,6 +16,8 @@ WARNINGS: list[str] = []
 
 SECRET_PATTERNS = [
     ("Flutterwave secret key", re.compile(rb"FLWSECK(?:_TEST)?-[A-Za-z0-9_-]{16,}")),
+    ("Google OAuth client secret", re.compile(rb"GOCSPX-[A-Za-z0-9_-]{20,}")),
+    ("Gmail OAuth refresh token", re.compile(rb"1//[A-Za-z0-9_-]{20,}")),
     ("private key material", re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
     (
         "credential-bearing database URL",
@@ -88,7 +90,15 @@ def _check_git_history() -> None:
     history = result.stdout.encode("utf-8", errors="ignore")
     if re.search(rb"FLWSECK(?:_TEST)?-[A-Za-z0-9_-]{16,}", history):
         FAILURES.append(
-            "Git history contains a Flutterwave secret key. Rotate the key and purge the secret from repository history before production."
+            "Git history contains a Flutterwave secret key. Rotate the key before production; history should also be purged when practical."
+        )
+    if re.search(rb"GOCSPX-[A-Za-z0-9_-]{20,}", history):
+        FAILURES.append(
+            "Git history contains a Google OAuth client secret. Rotate the OAuth client secret before production."
+        )
+    if re.search(rb"1//[A-Za-z0-9_-]{20,}", history):
+        FAILURES.append(
+            "Git history contains a Gmail OAuth refresh token. Revoke/regenerate it before production."
         )
     if re.search(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", history):
         FAILURES.append("Git history contains private-key material. Rotate and purge it before production.")
