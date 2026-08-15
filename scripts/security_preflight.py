@@ -24,9 +24,9 @@ SECRET_PATTERNS = [
         re.compile(rb"postgres(?:ql)?(?:\+[A-Za-z0-9_]+)?://[^\s:/]+:[^\s@]+@", re.I),
     ),
     (
-        "non-placeholder Gmail app password assignment",
+        "hard-coded Gmail app password",
         re.compile(
-            rb"GMAIL_APP_PASSWORD\s*=\s*(?!(?:YOUR_|REPLACE|<|$))[A-Za-z0-9 _-]{12,}",
+            rb"GMAIL_APP_PASSWORD\s*[:=]\s*[\"'][A-Za-z0-9 _-]{12,}[\"']",
             re.I,
         ),
     ),
