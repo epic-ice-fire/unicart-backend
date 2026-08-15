@@ -47,15 +47,23 @@ def hash_session_jti(jti: str) -> str:
     return hashlib.sha256(jti.encode("utf-8")).hexdigest()
 
 
-def access_token_expires_at() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+def access_token_expires_at(*, expires_minutes: int | None = None) -> datetime:
+    minutes = (
+        expires_minutes
+        if expires_minutes is not None
+        else settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
+    return datetime.now(timezone.utc) + timedelta(minutes=minutes)
 
 
-def create_access_token(data: dict, *, jti: str | None = None) -> str:
+def create_access_token(
+    data: dict,
+    *,
+    jti: str | None = None,
+    expires_minutes: int | None = None,
+) -> str:
     now = datetime.now(timezone.utc)
-    expire = access_token_expires_at()
+    expire = access_token_expires_at(expires_minutes=expires_minutes)
     token_jti = jti or uuid4().hex
 
     to_encode = data.copy()
