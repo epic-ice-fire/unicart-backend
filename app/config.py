@@ -25,6 +25,9 @@ class Settings:
         self.ACCESS_TOKEN_EXPIRE_MINUTES: int = int(
             os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
         )
+        self.REMEMBERED_SESSION_DAYS: int = int(
+            os.getenv("REMEMBERED_SESSION_DAYS", "30")
+        )
         self.JWT_ISSUER: str = os.getenv("JWT_ISSUER", "unicart-api")
         self.JWT_AUDIENCE: str = os.getenv("JWT_AUDIENCE", "unicart-app")
         self.MAX_ACTIVE_SESSIONS_PER_USER: int = int(
@@ -179,6 +182,8 @@ class Settings:
             errors.append("UniCart currently supports HS256 JWT signing only.")
         if self.ACCESS_TOKEN_EXPIRE_MINUTES <= 0 or self.ACCESS_TOKEN_EXPIRE_MINUTES > 1440:
             errors.append("ACCESS_TOKEN_EXPIRE_MINUTES must be between 1 and 1440.")
+        if self.REMEMBERED_SESSION_DAYS < 1 or self.REMEMBERED_SESSION_DAYS > 90:
+            errors.append("REMEMBERED_SESSION_DAYS must be between 1 and 90.")
         if self.MAX_ACTIVE_SESSIONS_PER_USER < 1 or self.MAX_ACTIVE_SESSIONS_PER_USER > 20:
             errors.append("MAX_ACTIVE_SESSIONS_PER_USER must be between 1 and 20.")
         if self.SESSION_RETENTION_DAYS < 1 or self.SESSION_RETENTION_DAYS > 365:
