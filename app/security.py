@@ -8,9 +8,6 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-# New passwords use bcrypt_sha256 so passwords longer than bcrypt's native
-# 72-byte limit are handled safely. Existing bcrypt hashes remain valid and are
-# transparently upgraded after a successful login.
 pwd_context = CryptContext(
     schemes=["bcrypt_sha256", "bcrypt"],
     default="bcrypt_sha256",
@@ -39,7 +36,6 @@ def verify_password_and_update(
 
 
 def new_session_jti() -> str:
-    # 256 bits of randomness. Only a SHA-256 digest is stored in the database.
     return secrets.token_urlsafe(32)
 
 

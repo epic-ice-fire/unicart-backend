@@ -1,5 +1,3 @@
-"""UniCart application package startup hooks."""
-
 from app.gmail_api_transport import install_gmail_api_transport
 
 install_gmail_api_transport()

@@ -1,10 +1,3 @@
-"""Gmail API transport for UniCart production email.
-
-When the three OAuth environment variables are configured, this module replaces
-email_service._send with an HTTPS Gmail API implementation. If they are absent,
-the existing SMTP transport remains unchanged for local development.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -34,9 +27,7 @@ def _send_via_gmail_api(to_email: str, subject: str, html_body: str) -> bool:
     client_id, client_secret, refresh_token = _oauth_values()
 
     if not gmail_user or not all((client_id, client_secret, refresh_token)):
-        logger.error(
-            "[UniCart Email] Gmail API transport is not fully configured."
-        )
+        logger.error("[UniCart Email] Gmail API transport is not fully configured.")
         return False
 
     msg = MIMEMultipart("alternative")
@@ -60,9 +51,7 @@ def _send_via_gmail_api(to_email: str, subject: str, html_body: str) -> bool:
 
             access_token = token_response.json().get("access_token")
             if not access_token:
-                logger.error(
-                    "[UniCart Email] Gmail OAuth token response contained no access token."
-                )
+                logger.error("[UniCart Email] Gmail OAuth token response contained no access token.")
                 return False
 
             raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
@@ -79,7 +68,6 @@ def _send_via_gmail_api(to_email: str, subject: str, html_body: str) -> bool:
             subject,
         )
         return True
-
     except httpx.HTTPStatusError as exc:
         logger.error(
             "[UniCart Email] ❌ Gmail API HTTP %s while sending to %s",
@@ -97,7 +85,6 @@ def _send_via_gmail_api(to_email: str, subject: str, html_body: str) -> bool:
 
 
 def install_gmail_api_transport() -> bool:
-    """Install Gmail API as the active mail transport when fully configured."""
     values = _oauth_values()
 
     if not any(values):

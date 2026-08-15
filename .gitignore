@@ -1,10 +1,6 @@
-# Secrets / local environment
 .env
 .env.*
 !.env.example
-!.env.local.example
-
-# Local databases and backups may contain customer/payment data
 *.db
 *.db-journal
 *.db-wal
@@ -12,36 +8,21 @@
 *.sqlite
 *.sqlite3
 backups/
-
-# Keys / certificates / signing material
+*.dump
+*.dmp
 *.pem
 *.key
 *.p12
 *.pfx
 *.keystore
 *.jks
-
-# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
 venv/
-
-# Flutter
-.dart_tool/
-build/
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.pub/
-.pub-cache/
-
-# IDE
 .idea/
 .vscode/
-
-# Logs / crash dumps
 *.log
-*.dump
-*.dmp
+.DS_Store
+Thumbs.db

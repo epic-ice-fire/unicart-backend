@@ -18,8 +18,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
 class Settings:
     def __init__(self) -> None:
         self.ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development").strip().lower()
-
-        # Authentication / JWT
         self.SECRET_KEY: str = os.getenv("SECRET_KEY", _DEFAULT_DEV_SECRET)
         self.ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
         self.ACCESS_TOKEN_EXPIRE_MINUTES: int = int(
@@ -36,8 +34,6 @@ class Settings:
         self.SESSION_RETENTION_DAYS: int = int(
             os.getenv("SESSION_RETENTION_DAYS", "30")
         )
-
-        # Database
         self.DATABASE_URL: str = os.getenv(
             "DATABASE_URL",
             "sqlite+aiosqlite:///./unicart.db",
@@ -58,14 +54,10 @@ class Settings:
         self.PAYMENT_CHECKOUT_TTL_MINUTES: int = int(
             os.getenv("PAYMENT_CHECKOUT_TTL_MINUTES", "30")
         )
-
-        # Business configuration
         self.ENTRY_FEE_NGN: int = int(os.getenv("ENTRY_FEE_NGN", "2000"))
         self.TARGET_ITEM_AMOUNT_NGN: int = int(
             os.getenv("TARGET_ITEM_AMOUNT_NGN", "50000")
         )
-
-        # Flutterwave. Never provide source-code fallback credentials.
         self.FLW_SECRET_KEY: str = os.getenv("FLW_SECRET_KEY", "").strip()
         self.FLW_PUBLIC_KEY: str = os.getenv("FLW_PUBLIC_KEY", "").strip()
         self.FLW_ENCRYPTION_KEY: str = os.getenv("FLW_ENCRYPTION_KEY", "").strip()
@@ -77,8 +69,6 @@ class Settings:
             "FLW_CALLBACK_URL",
             "http://127.0.0.1:8000/payments/callback",
         ).strip()
-
-        # PAU verification
         self.ALLOWED_EMAIL_DOMAINS: str = os.getenv(
             "ALLOWED_EMAIL_DOMAINS", "pau.edu.ng",
         )
@@ -86,17 +76,12 @@ class Settings:
             os.getenv("PAU_CODE_EXPIRES_MINUTES", "10")
         )
         self.DEBUG_RETURN_PAU_CODE: bool = _env_bool("DEBUG_RETURN_PAU_CODE", False)
-
-        # Email. Production prefers Gmail API over HTTPS because Render cannot
-        # reach Gmail SMTP reliably. SMTP remains a local-development fallback.
         self.ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "unicartbytekena@gmail.com")
         self.GMAIL_USER: str = os.getenv("GMAIL_USER", "").strip()
         self.GMAIL_APP_PASSWORD: str = os.getenv("GMAIL_APP_PASSWORD", "").strip()
         self.GMAIL_API_CLIENT_ID: str = os.getenv("GMAIL_API_CLIENT_ID", "").strip()
         self.GMAIL_API_CLIENT_SECRET: str = os.getenv("GMAIL_API_CLIENT_SECRET", "").strip()
         self.GMAIL_API_REFRESH_TOKEN: str = os.getenv("GMAIL_API_REFRESH_TOKEN", "").strip()
-
-        # CORS
         self.BACKEND_CORS_ORIGINS: list[str] = self._parse_origins(
             os.getenv(
                 "BACKEND_CORS_ORIGINS",
@@ -121,7 +106,6 @@ class Settings:
         return [item.strip().lower() for item in value.split(",") if item.strip()]
 
     def validate_runtime(self) -> None:
-        """Fail closed when a production deployment is dangerously configured."""
         errors: list[str] = []
 
         if self.is_production:

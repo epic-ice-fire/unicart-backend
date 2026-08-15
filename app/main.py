@@ -24,16 +24,13 @@ _PAYMENT_REF_RE = re.compile(r"unicart_(?:entry|item)_[A-Za-z0-9_-]+")
 
 
 def _safe_log_path(path: str) -> str:
-    """Avoid writing customer payment references into routine access logs."""
     return _PAYMENT_REF_RE.sub("<payment-reference>", path)
-
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.validate_runtime()
 
-    # Local-only convenience. Production must use migrations instead.
     if settings.AUTO_CREATE_TABLES:
         import app.models  # noqa: F401
 
@@ -73,9 +70,6 @@ app.add_middleware(
 async def request_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())[:12]
     start = time.perf_counter()
-
-    # UniCart only accepts small JSON/form requests. Reject oversized declared
-    # bodies before FastAPI/Pydantic allocate memory to parse them.
     content_length = request.headers.get("content-length")
     if content_length:
         try:
