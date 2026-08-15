@@ -84,10 +84,14 @@ class Settings:
         )
         self.DEBUG_RETURN_PAU_CODE: bool = _env_bool("DEBUG_RETURN_PAU_CODE", False)
 
-        # Email
+        # Email. Production prefers Gmail API over HTTPS because Render cannot
+        # reach Gmail SMTP reliably. SMTP remains a local-development fallback.
         self.ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "unicartbytekena@gmail.com")
         self.GMAIL_USER: str = os.getenv("GMAIL_USER", "").strip()
         self.GMAIL_APP_PASSWORD: str = os.getenv("GMAIL_APP_PASSWORD", "").strip()
+        self.GMAIL_API_CLIENT_ID: str = os.getenv("GMAIL_API_CLIENT_ID", "").strip()
+        self.GMAIL_API_CLIENT_SECRET: str = os.getenv("GMAIL_API_CLIENT_SECRET", "").strip()
+        self.GMAIL_API_REFRESH_TOKEN: str = os.getenv("GMAIL_API_REFRESH_TOKEN", "").strip()
 
         # CORS
         self.BACKEND_CORS_ORIGINS: list[str] = self._parse_origins(
@@ -130,8 +134,26 @@ class Settings:
                 errors.append("FLW_SECRET_KEY is required in production.")
             if not self.FLW_SECRET_HASH:
                 errors.append("FLW_SECRET_HASH is required so Flutterwave webhooks can be authenticated.")
-            if not self.GMAIL_USER or not self.GMAIL_APP_PASSWORD:
-                errors.append("Gmail sender credentials are required for PAU verification in production.")
+
+            gmail_api_values = (
+                self.GMAIL_API_CLIENT_ID,
+                self.GMAIL_API_CLIENT_SECRET,
+                self.GMAIL_API_REFRESH_TOKEN,
+            )
+            gmail_api_ready = all(gmail_api_values)
+            gmail_api_partial = any(gmail_api_values) and not gmail_api_ready
+            if gmail_api_partial:
+                errors.append(
+                    "Gmail API OAuth configuration is incomplete; set "
+                    "GMAIL_API_CLIENT_ID, GMAIL_API_CLIENT_SECRET and "
+                    "GMAIL_API_REFRESH_TOKEN together."
+                )
+            if not self.GMAIL_USER or not (gmail_api_ready or self.GMAIL_APP_PASSWORD):
+                errors.append(
+                    "Email delivery requires GMAIL_USER plus either complete Gmail API OAuth "
+                    "credentials or GMAIL_APP_PASSWORD."
+                )
+
             if "*" in self.BACKEND_CORS_ORIGINS:
                 errors.append("Wildcard CORS origins are forbidden in production.")
             if not self.ALLOWED_HOSTS or "*" in self.ALLOWED_HOSTS:
