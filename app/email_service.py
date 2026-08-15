@@ -14,6 +14,7 @@ To get a Gmail App Password:
 
 import logging
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -45,7 +46,14 @@ def _send(to_email: str, subject: str, html_body: str) -> bool:
         msg["To"] = to_email
         msg.attach(MIMEText(html_body, "html"))
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        # Render could not reach Gmail's implicit TLS endpoint on port 465.
+        # Use Gmail's STARTTLS endpoint instead and bound the network wait so a
+        # failed mail connection can never leave the verification UI spinning
+        # for minutes.
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=8) as server:
+            server.ehlo()
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
             server.login(gmail_user, gmail_password)
             server.sendmail(gmail_user, to_email, msg.as_string())
 
