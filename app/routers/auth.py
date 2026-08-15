@@ -5,7 +5,7 @@ import hmac
 import logging
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -79,11 +79,23 @@ def _hash_client_metadata(value: str | None) -> str | None:
     ).hexdigest()
 
 
+def _email_delivery_configured() -> bool:
+    gmail_api_ready = bool(
+        settings.GMAIL_USER
+        and settings.GMAIL_API_CLIENT_ID
+        and settings.GMAIL_API_CLIENT_SECRET
+        and settings.GMAIL_API_REFRESH_TOKEN
+    )
+    smtp_ready = bool(settings.GMAIL_USER and settings.GMAIL_APP_PASSWORD)
+    return gmail_api_ready or smtp_ready
+
+
 async def _issue_session(
     *,
     db: AsyncSession,
     user: User,
     request: Request,
+    remember_me: bool = False,
 ) -> str:
     now = _utcnow()
 
@@ -106,9 +118,21 @@ async def _issue_session(
         for old_session in active_sessions[:overflow]:
             old_session.revoked_at = now
 
+    expires_minutes = (
+        settings.REMEMBERED_SESSION_DAYS * 24 * 60
+        if remember_me
+        else settings.ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
     jti = new_session_jti()
-    expires_at = access_token_expires_at().replace(tzinfo=None)
-    token = create_access_token({"sub": str(user.id)}, jti=jti)
+    expires_at = access_token_expires_at(
+        expires_minutes=expires_minutes,
+    ).replace(tzinfo=None)
+    token = create_access_token(
+        {"sub": str(user.id)},
+        jti=jti,
+        expires_minutes=expires_minutes,
+    )
 
     db.add(
         AuthSession(
@@ -189,6 +213,7 @@ async def register(
 async def login(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    remember_me: bool = Form(False),
     db: AsyncSession = Depends(get_db),
 ):
     email = form_data.username.lower().strip()
@@ -220,7 +245,12 @@ async def login(
     if replacement_hash:
         user.password_hash = replacement_hash
 
-    access_token = await _issue_session(db=db, user=user, request=request)
+    access_token = await _issue_session(
+        db=db,
+        user=user,
+        request=request,
+        remember_me=remember_me,
+    )
     await db.commit()
     await rate_limiter.reset(limiter_key)
 
@@ -296,7 +326,7 @@ async def change_password(
     now = _utcnow()
 
     # Password changes revoke every existing bearer token first. Then a single
-    # fresh session is issued back to the device that changed the password.
+    # fresh short session is issued back to the device that changed the password.
     await db.execute(
         update(AuthSession)
         .where(
@@ -380,7 +410,7 @@ async def request_pau_code(
     await db.refresh(user)
 
     email_sent = False
-    if settings.GMAIL_USER and settings.GMAIL_APP_PASSWORD:
+    if _email_delivery_configured():
         try:
             email_sent = bool(
                 await asyncio.to_thread(
