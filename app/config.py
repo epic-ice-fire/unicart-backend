@@ -69,6 +69,15 @@ class Settings:
             "FLW_CALLBACK_URL",
             "http://127.0.0.1:8000/payments/callback",
         ).strip()
+        default_public_app_url = (
+            "https://unicartbytekena.onrender.com"
+            if self.ENVIRONMENT == "production"
+            else "http://localhost:3000"
+        )
+        self.PUBLIC_APP_URL: str = os.getenv(
+            "PUBLIC_APP_URL",
+            default_public_app_url,
+        ).strip().rstrip("/")
         self.ALLOWED_EMAIL_DOMAINS: str = os.getenv(
             "ALLOWED_EMAIL_DOMAINS", "pau.edu.ng",
         )
@@ -161,6 +170,12 @@ class Settings:
             callback = urlparse(self.FLW_CALLBACK_URL)
             if callback.scheme != "https" or not callback.netloc:
                 errors.append("FLW_CALLBACK_URL must be a public HTTPS URL in production.")
+
+            public_app = urlparse(self.PUBLIC_APP_URL)
+            if public_app.scheme != "https" or not public_app.netloc:
+                errors.append("PUBLIC_APP_URL must be a public HTTPS URL in production.")
+            if public_app.hostname in {"localhost", "127.0.0.1", "::1"}:
+                errors.append("PUBLIC_APP_URL cannot point to localhost in production.")
 
         if self.ALGORITHM != "HS256":
             errors.append("UniCart currently supports HS256 JWT signing only.")

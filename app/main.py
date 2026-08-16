@@ -3,11 +3,13 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
+from html import escape
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from app.routers import auth, lobbies, payments
 from app.config import settings
@@ -21,10 +23,54 @@ logging.basicConfig(
 logger = logging.getLogger("unicart")
 
 _PAYMENT_REF_RE = re.compile(r"unicart_(?:entry|item)_[A-Za-z0-9_-]+")
+_CALLBACK_CLOSE_BUTTON = '<button onclick="window.close()">Close tab</button>'
 
 
 def _safe_log_path(path: str) -> str:
     return _PAYMENT_REF_RE.sub("<payment-reference>", path)
+
+
+async def _callback_with_return_link(response: Response) -> Response:
+    content_type = response.headers.get("content-type", "")
+    if "text/html" not in content_type.lower():
+        return response
+
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None:
+        raw_body = getattr(response, "body", b"")
+        if isinstance(raw_body, str):
+            raw_body = raw_body.encode("utf-8")
+    else:
+        chunks: list[bytes] = []
+        async for chunk in iterator:
+            if isinstance(chunk, str):
+                chunks.append(chunk.encode("utf-8"))
+            elif isinstance(chunk, memoryview):
+                chunks.append(chunk.tobytes())
+            else:
+                chunks.append(bytes(chunk))
+        raw_body = b"".join(chunks)
+
+    body = raw_body.decode("utf-8", errors="replace")
+    app_url = escape(settings.PUBLIC_APP_URL, quote=True)
+    return_link = (
+        f'<a href="{app_url}" '
+        'style="display:inline-block;text-decoration:none;border:none;border-radius:12px;'
+        'padding:12px 18px;background:#111827;color:white;font-weight:700;'
+        'cursor:pointer;margin-top:22px;margin-right:8px">Return to UniCart</a>'
+    )
+    body = body.replace(_CALLBACK_CLOSE_BUTTON, return_link)
+
+    headers = {
+        key: value
+        for key, value in response.headers.items()
+        if key.lower() not in {"content-length", "content-type"}
+    }
+    return HTMLResponse(
+        content=body,
+        status_code=response.status_code,
+        headers=headers,
+    )
 
 
 @asynccontextmanager
@@ -105,6 +151,9 @@ async def request_middleware(request: Request, call_next):
             duration_ms,
         )
         raise
+
+    if request.url.path == "/payments/callback":
+        response = await _callback_with_return_link(response)
 
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
     logger.info(
