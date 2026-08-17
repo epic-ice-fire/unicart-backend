@@ -1,0 +1,306 @@
+name: Restore UniCart notification lifecycle
+
+"on":
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/restore-notification-lifecycle.yml
+
+permissions:
+  contents: write
+
+jobs:
+  restore-notifications:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENVIRONMENT: "development"
+      DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+      SECRET_KEY: "notification-hotfix-ci-secret-key-long-enough"
+      DEBUG_RETURN_PAU_CODE: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Apply notification lifecycle patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly 1 match, found {count}")
+              return text.replace(old, new, 1)
+
+          def function_block(text: str, name: str, *, async_def: bool = True):
+              prefix = "async def " if async_def else "def "
+              start = text.index(f"{prefix}{name}(")
+              candidates = [
+                  pos for pos in (
+                      text.find("\n\n@router.", start + 1),
+                      text.find("\n\nasync def ", start + 1),
+                      text.find("\n\ndef ", start + 1),
+                  ) if pos != -1
+              ]
+              end = min(candidates) if candidates else len(text)
+              return start, end, text[start:end]
+
+          def replace_in_function(
+              text: str,
+              name: str,
+              old: str,
+              new: str,
+              label: str,
+              *,
+              async_def: bool = True,
+          ) -> str:
+              start, end, block = function_block(text, name, async_def=async_def)
+              count = block.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly 1 match in {name}, found {count}")
+              block = block.replace(old, new, 1)
+              return text[:start] + block + text[end:]
+
+          # ------------------------------------------------------------------
+          # 1) Make MOV/target transitions intentional.
+          # ------------------------------------------------------------------
+          lobbies_path = Path("app/routers/lobbies.py")
+          lobbies = lobbies_path.read_text(encoding="utf-8")
+
+          lobbies = replace_once(
+              lobbies,
+              '''async def recalculate_lobby_totals(db: AsyncSession, lobby: Lobby) -> None:\n    """Only PAID items count toward the vault goal."""''',
+              '''async def recalculate_lobby_totals(\n    db: AsyncSession,\n    lobby: Lobby,\n    *,\n    allow_trigger: bool = True,\n) -> None:\n    """Recalculate paid totals; only intentional write paths may trigger a batch."""''',
+              "recalculate signature",
+          )
+          lobbies = replace_once(
+              lobbies,
+              '''    if lobby.current_item_amount >= lobby.target_item_amount:\n        if lobby.status == LobbyStatus.open:\n            lobby.status = LobbyStatus.triggered''',
+              '''    if allow_trigger and lobby.current_item_amount >= lobby.target_item_amount:\n        if lobby.status == LobbyStatus.open:\n            lobby.status = LobbyStatus.triggered''',
+              "recalculate trigger guard",
+          )
+
+          for fn in (
+              "main_lobby_snapshot",
+              "main_lobby_details",
+              "join_main_lobby",
+              "add_item_to_main_lobby",
+              "remove_my_item_from_main_lobby",
+              "admin_force_remove_item",
+              "leave_main_lobby",
+          ):
+              lobbies = replace_in_function(
+                  lobbies,
+                  fn,
+                  "await recalculate_lobby_totals(db, lobby)",
+                  "await recalculate_lobby_totals(db, lobby, allow_trigger=False)",
+                  f"disable read/incidental trigger in {fn}",
+              )
+
+          lobbies = replace_in_function(
+              lobbies,
+              "admin_dashboard",
+              "await recalculate_lobby_totals(db, current_open_lobby)",
+              "await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)",
+              "disable admin dashboard trigger",
+          )
+          lobbies_path.write_text(lobbies, encoding="utf-8")
+
+          # ------------------------------------------------------------------
+          # 2) Restore explicit UniCart payment receipts after verified payment.
+          # ------------------------------------------------------------------
+          email_path = Path("app/email_service.py")
+          email_text = email_path.read_text(encoding="utf-8")
+          email_text = replace_once(
+              email_text,
+              "import logging\nimport smtplib\nimport ssl\n",
+              "import logging\nimport smtplib\nimport ssl\nfrom html import escape\n",
+              "email html escaping import",
+          )
+
+          receipt_marker = "# ─── Admin: Item force-removed notification ────────────────────────────────────"
+          if "def send_user_payment_receipt(" in email_text:
+              raise SystemExit("payment receipt function already exists")
+          if receipt_marker not in email_text:
+              raise SystemExit("payment receipt insertion marker not found")
+
+          receipt_function = '''def send_user_payment_receipt(\n    user_email: str,\n    payment_type: str,\n    amount_ngn: int,\n    lobby_id: int,\n    reference: str,\n    item_id: int | None = None,\n    item_link: str | None = None,\n) -> bool:\n    """Send a UniCart-owned receipt after server-side Flutterwave verification."""\n    kind = "Entry fee" if payment_type == "entry_fee" else "Item payment"\n    safe_reference = escape(reference)\n    item_html = ""\n    if item_id is not None:\n        item_html += f'<span class="pill blue">Item: #{item_id}</span>'\n    if item_link:\n        safe_link = escape(item_link, quote=True)\n        item_html += (\n            '<hr class="divider"><h2>Item</h2>'\n            f'<div class="item-box"><a href="{safe_link}">{safe_link}</a></div>'\n        )\n\n    subject = f"UniCart — Payment confirmed · {kind}"\n    content = f"""\n    <div class="header">\n      <h1>Payment confirmed</h1>\n      <p>UniCart has independently verified your Flutterwave payment.</p>\n    </div>\n\n    <p>Your payment has been securely verified and recorded by UniCart.</p>\n\n    <div>\n      <span class="pill green">Paid: ₦{int(amount_ngn):,}</span>\n      <span class="pill blue">Batch: #{lobby_id}</span>\n      <span class="pill">{kind}</span>\n      {item_html}\n    </div>\n\n    <hr class="divider">\n    <h2>Reference</h2>\n    <div class="item-box">{safe_reference}</div>\n\n    <p style="color: #667085; font-size: 13px;">\n      Keep this email for your records. UniCart only sends this receipt after the\n      backend verifies the exact payment reference, amount and NGN currency with Flutterwave.\n    </p>\n    """\n    return _send(user_email, subject, _base_template(content))\n\n\n'''
+          email_text = email_text.replace(receipt_marker, receipt_function + receipt_marker, 1)
+
+          # Lifecycle notification functions should report actual delivery result.
+          for fn in (
+              "send_admin_item_force_removed",
+              "send_user_item_force_removed",
+              "send_admin_lobby_triggered",
+              "send_user_lobby_triggered",
+              "send_user_batch_status_update",
+          ):
+              start, end, block = function_block(email_text, fn, async_def=False)
+              if ") -> None:" not in block:
+                  raise SystemExit(f"{fn}: return annotation not found")
+              block = block.replace(") -> None:", ") -> bool:", 1)
+              send_pos = block.rfind("\n    _send(")
+              if send_pos == -1:
+                  raise SystemExit(f"{fn}: final _send call not found")
+              block = block[:send_pos] + block[send_pos:].replace("\n    _send(", "\n    return _send(", 1)
+              email_text = email_text[:start] + block + email_text[end:]
+
+          email_path.write_text(email_text, encoding="utf-8")
+
+          payments_path = Path("app/routers/payments.py")
+          payments = payments_path.read_text(encoding="utf-8")
+          payments = replace_once(
+              payments,
+              "import hashlib\n",
+              "import asyncio\nimport hashlib\n",
+              "asyncio import",
+          )
+          payments = replace_once(
+              payments,
+              "from app.deps import get_current_user, require_admin, require_verified_student\n",
+              "from app.deps import get_current_user, require_admin, require_verified_student\nfrom app.email_service import send_user_payment_receipt\n",
+              "receipt import",
+          )
+
+          helper_marker = "\ndef _render_callback_page("
+          if helper_marker not in payments:
+              raise SystemExit("receipt helper insertion marker missing")
+          receipt_helper = '''\nasync def _send_verified_payment_receipt(\n    db: AsyncSession,\n    *,\n    user_id: int,\n    payment_type: str,\n    amount_ngn: int,\n    lobby_id: int,\n    reference: str,\n    item_id: int | None = None,\n    item_link: str | None = None,\n) -> None:\n    """Best-effort receipt delivery; email failure never rolls back a payment."""\n    try:\n        user_email = (\n            await db.execute(select(User.email).where(User.id == user_id))\n        ).scalar_one_or_none()\n        if not user_email:\n            logger.error("Payment receipt skipped: user_id=%s has no email", user_id)\n            return\n\n        sent = await asyncio.to_thread(\n            send_user_payment_receipt,\n            user_email=user_email,\n            payment_type=payment_type,\n            amount_ngn=int(amount_ngn),\n            lobby_id=lobby_id,\n            reference=reference,\n            item_id=item_id,\n            item_link=item_link,\n        )\n        if not sent:\n            logger.error(\n                "Payment receipt delivery failed user_id=%s lobby_id=%s type=%s",\n                user_id,\n                lobby_id,\n                payment_type,\n            )\n    except Exception:\n        logger.exception(\n            "Unexpected payment receipt failure user_id=%s lobby_id=%s type=%s",\n            user_id,\n            lobby_id,\n            payment_type,\n        )\n\n'''
+          payments = payments.replace(helper_marker, receipt_helper + helper_marker, 1)
+
+          # Entry success returns both first-processing state and membership state.
+          start, end, entry_block = function_block(payments, "_mark_entry_payment_success")
+          entry_block = entry_block.replace(") -> bool:", ") -> tuple[bool, bool]:", 1)
+          entry_block = replace_once(
+              entry_block,
+              "    if locked_payment.status == PaymentStatus.success:\n        return False\n",
+              "    if locked_payment.status == PaymentStatus.success:\n        return False, False\n",
+              "entry duplicate return",
+          )
+          entry_block = replace_once(
+              entry_block,
+              "    return joined_now\n",
+              "    return True, joined_now\n",
+              "entry processed return",
+          )
+          payments = payments[:start] + entry_block + payments[end:]
+
+          payments = replace_once(
+              payments,
+              '''        if flw_status == "successful":\n            await _mark_entry_payment_success(\n                db,\n                payment=payment,\n                flw_data=flw_data,\n                source="stale_checkout_recovery",\n            )\n            await db.commit()\n            raise HTTPException(''',
+              '''        if flw_status == "successful":\n            processed_now, _ = await _mark_entry_payment_success(\n                db,\n                payment=payment,\n                flw_data=flw_data,\n                source="stale_checkout_recovery",\n            )\n            await db.commit()\n            if processed_now:\n                await _send_verified_payment_receipt(\n                    db,\n                    user_id=payment.user_id,\n                    payment_type="entry_fee",\n                    amount_ngn=payment.amount_ngn,\n                    lobby_id=payment.lobby_id,\n                    reference=payment.reference,\n                )\n            raise HTTPException(''',
+              "stale entry receipt",
+          )
+
+          payments = replace_once(
+              payments,
+              '''    joined_now = await _mark_entry_payment_success(db, payment=payment, flw_data=flw_data, source="manual_verify")\n    await db.commit()\n    await db.refresh(payment)\n\n    return PaymentVerifyResponse(''',
+              '''    processed_now, joined_now = await _mark_entry_payment_success(\n        db, payment=payment, flw_data=flw_data, source="manual_verify"\n    )\n    await db.commit()\n    await db.refresh(payment)\n    if processed_now:\n        await _send_verified_payment_receipt(\n            db,\n            user_id=payment.user_id,\n            payment_type="entry_fee",\n            amount_ngn=payment.amount_ngn,\n            lobby_id=payment.lobby_id,\n            reference=payment.reference,\n        )\n\n    return PaymentVerifyResponse(''',
+              "manual entry receipt",
+          )
+
+          payments = replace_once(
+              payments,
+              '''    if payment:\n        if payment.status != PaymentStatus.success:\n            await _mark_entry_payment_success(db, payment=payment, flw_data=flw_data, source="callback")\n            await db.commit()\n        return _render_callback_page(''',
+              '''    if payment:\n        if payment.status != PaymentStatus.success:\n            processed_now, _ = await _mark_entry_payment_success(\n                db, payment=payment, flw_data=flw_data, source="callback"\n            )\n            await db.commit()\n            if processed_now:\n                await _send_verified_payment_receipt(\n                    db,\n                    user_id=payment.user_id,\n                    payment_type="entry_fee",\n                    amount_ngn=payment.amount_ngn,\n                    lobby_id=payment.lobby_id,\n                    reference=payment.reference,\n                )\n        return _render_callback_page(''',
+              "callback entry receipt",
+          )
+
+          payments = replace_once(
+              payments,
+              '''        await _mark_entry_payment_success(db, payment=payment, flw_data=flw_data, source="webhook")\n        await db.commit()\n        return {"message": "Entry fee webhook processed."}''',
+              '''        processed_now, _ = await _mark_entry_payment_success(\n            db, payment=payment, flw_data=flw_data, source="webhook"\n        )\n        await db.commit()\n        if processed_now:\n            await _send_verified_payment_receipt(\n                db,\n                user_id=payment.user_id,\n                payment_type="entry_fee",\n                amount_ngn=payment.amount_ngn,\n                lobby_id=payment.lobby_id,\n                reference=payment.reference,\n            )\n        return {"message": "Entry fee webhook processed."}''',
+              "webhook entry receipt",
+          )
+
+          payments = replace_once(
+              payments,
+              '''    await db.commit()\n    await db.refresh(item)\n\n    if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:\n        await send_trigger_emails(db, lobby)''',
+              '''    await db.commit()\n    await db.refresh(item)\n\n    if processed_now:\n        await _send_verified_payment_receipt(\n            db,\n            user_id=item.user_id,\n            payment_type="item_payment",\n            amount_ngn=item.item_payment_amount_ngn or item.item_amount,\n            lobby_id=item.lobby_id,\n            reference=item.item_payment_reference or reference,\n            item_id=item.id,\n            item_link=item.item_link,\n        )\n\n    if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:\n        await send_trigger_emails(db, lobby)''',
+              "manual item receipt",
+          )
+
+          payments = replace_once(
+              payments,
+              '''        await db.commit()\n\n        if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:\n            await send_trigger_emails(db, lobby)\n\n    return _render_callback_page(\n        title="Item payment successful",''',
+              '''        await db.commit()\n\n        if processed_now:\n            await _send_verified_payment_receipt(\n                db,\n                user_id=item.user_id,\n                payment_type="item_payment",\n                amount_ngn=item.item_payment_amount_ngn or item.item_amount,\n                lobby_id=item.lobby_id,\n                reference=item.item_payment_reference or tx_ref,\n                item_id=item.id,\n                item_link=item.item_link,\n            )\n\n        if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:\n            await send_trigger_emails(db, lobby)\n\n    return _render_callback_page(\n        title="Item payment successful",''',
+              "callback item receipt",
+          )
+
+          payments = replace_once(
+              payments,
+              '''    await db.commit()\n\n    if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:\n        await send_trigger_emails(db, lobby)\n\n    return {"message": "Item payment webhook processed."}''',
+              '''    await db.commit()\n\n    if processed_now:\n        await _send_verified_payment_receipt(\n            db,\n            user_id=item.user_id,\n            payment_type="item_payment",\n            amount_ngn=item.item_payment_amount_ngn or item.item_amount,\n            lobby_id=item.lobby_id,\n            reference=item.item_payment_reference or tx_ref,\n            item_id=item.id,\n            item_link=item.item_link,\n        )\n\n    if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:\n        await send_trigger_emails(db, lobby)\n\n    return {"message": "Item payment webhook processed."}''',
+              "webhook item receipt",
+          )
+          payments_path.write_text(payments, encoding="utf-8")
+
+          # ------------------------------------------------------------------
+          # 3) Retry transient Gmail API HTTPS failures without retrying bad auth.
+          # ------------------------------------------------------------------
+          gmail_path = Path("app/gmail_api_transport.py")
+          gmail = gmail_path.read_text(encoding="utf-8")
+          gmail = replace_once(
+              gmail,
+              "import logging\nimport os\n",
+              "import logging\nimport os\nimport time\n",
+              "gmail retry import",
+          )
+          start = gmail.index("def _send_via_gmail_api(")
+          end = gmail.index("\n\ndef install_gmail_api_transport", start)
+          gmail_sender = '''def _send_via_gmail_api(to_email: str, subject: str, html_body: str) -> bool:\n    gmail_user = os.getenv("GMAIL_USER", "").strip()\n    client_id, client_secret, refresh_token = _oauth_values()\n\n    if not gmail_user or not all((client_id, client_secret, refresh_token)):\n        logger.error("[UniCart Email] Gmail API transport is not fully configured.")\n        return False\n\n    msg = MIMEMultipart("alternative")\n    msg["Subject"] = subject\n    msg["From"] = f"{FROM_NAME} <{gmail_user}>"\n    msg["To"] = to_email\n    msg.attach(MIMEText(html_body, "html"))\n    raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")\n\n    for attempt in range(1, 4):\n        try:\n            with httpx.Client(timeout=8.0) as client:\n                token_response = client.post(\n                    TOKEN_URL,\n                    data={\n                        "client_id": client_id,\n                        "client_secret": client_secret,\n                        "refresh_token": refresh_token,\n                        "grant_type": "refresh_token",\n                    },\n                )\n                token_response.raise_for_status()\n                access_token = token_response.json().get("access_token")\n                if not access_token:\n                    logger.error("[UniCart Email] Gmail OAuth token response had no access token.")\n                    return False\n\n                send_response = client.post(\n                    SEND_URL,\n                    headers={"Authorization": f"Bearer {access_token}"},\n                    json={"raw": raw_message},\n                )\n                send_response.raise_for_status()\n\n            logger.info("[UniCart Email] Sent via Gmail API → %s | %s", to_email, subject)\n            return True\n\n        except httpx.HTTPStatusError as exc:\n            status_code = exc.response.status_code\n            retryable = status_code == 429 or status_code >= 500\n            if not retryable or attempt == 3:\n                logger.error(\n                    "[UniCart Email] Gmail API HTTP %s while sending to %s (attempt %s/3)",\n                    status_code,\n                    to_email,\n                    attempt,\n                )\n                return False\n            logger.warning(\n                "[UniCart Email] Temporary Gmail API HTTP %s for %s; retrying (%s/3)",\n                status_code,\n                to_email,\n                attempt,\n            )\n\n        except httpx.HTTPError:\n            if attempt == 3:\n                logger.exception(\n                    "[UniCart Email] Gmail API network failure for %s after 3 attempts",\n                    to_email,\n                )\n                return False\n            logger.warning(\n                "[UniCart Email] Temporary Gmail API network failure for %s; retrying (%s/3)",\n                to_email,\n                attempt,\n            )\n\n        except (ValueError, KeyError):\n            logger.exception("[UniCart Email] Invalid Gmail API response while sending to %s", to_email)\n            return False\n\n        time.sleep(0.5 * attempt)\n\n    return False\n'''
+          gmail = gmail[:start] + gmail_sender + gmail[end:]
+          gmail_path.write_text(gmail, encoding="utf-8")
+
+          # Existing direct unit test expected the old single bool return.
+          test_path = Path("tests/test_authorization_security.py")
+          tests = test_path.read_text(encoding="utf-8")
+          tests = replace_once(
+              tests,
+              "    joined = await _mark_entry_payment_success(\n",
+              "    processed, joined = await _mark_entry_payment_success(\n",
+              "entry helper test tuple",
+          )
+          tests = replace_once(
+              tests,
+              "    assert joined is True\n    assert active_pass.lobby_id == new_lobby.id\n",
+              "    assert processed is True\n    assert joined is True\n    assert active_pass.lobby_id == new_lobby.id\n",
+              "entry helper processed assertion",
+          )
+          test_path.write_text(tests, encoding="utf-8")
+
+          regression_test = Path("tests/test_notification_regression.py")
+          if regression_test.exists():
+              raise SystemExit("notification regression test already exists")
+          regression_test.write_text('''import os\n\nos.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")\nos.environ.setdefault("SECRET_KEY", "notification-test-secret-key-that-is-long-enough")\nos.environ.setdefault("ENVIRONMENT", "development")\n\nimport pytest\nimport pytest_asyncio\nfrom sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine\n\nfrom app import email_service\nfrom app.db import Base\nfrom app.models import ItemPaymentStatus, Lobby, LobbyItem, LobbyStatus, User\nfrom app.routers.lobbies import recalculate_lobby_totals\n\n\n@pytest_asyncio.fixture\nasync def db_session():\n    engine = create_async_engine("sqlite+aiosqlite:///:memory:")\n    async with engine.begin() as conn:\n        await conn.run_sync(Base.metadata.create_all)\n    Session = async_sessionmaker(engine, expire_on_commit=False)\n    async with Session() as session:\n        yield session\n    await engine.dispose()\n\n\n@pytest.mark.asyncio\nasync def test_dashboard_recalculation_cannot_silently_trigger_mov(db_session):\n    user = User(email="buyer@example.com", password_hash="x")\n    lobby = Lobby(\n        title="MAIN",\n        target_item_amount=5000,\n        current_item_amount=0,\n        status=LobbyStatus.open,\n    )\n    db_session.add_all([user, lobby])\n    await db_session.flush()\n    db_session.add(\n        LobbyItem(\n            lobby_id=lobby.id,\n            user_id=user.id,\n            item_link="https://example.com/item",\n            item_amount=5000,\n            item_payment_amount_ngn=5000,\n            item_payment_status=ItemPaymentStatus.paid,\n        )\n    )\n    await db_session.flush()\n\n    await recalculate_lobby_totals(db_session, lobby, allow_trigger=False)\n    assert lobby.current_item_amount == 5000\n    assert lobby.status == LobbyStatus.open\n\n    await recalculate_lobby_totals(db_session, lobby)\n    assert lobby.status == LobbyStatus.triggered\n\n\ndef test_unicart_payment_receipt_uses_shared_email_transport(monkeypatch):\n    captured = {}\n\n    def fake_send(to_email, subject, html_body):\n        captured.update(to=to_email, subject=subject, html=html_body)\n        return True\n\n    monkeypatch.setattr(email_service, "_send", fake_send)\n    sent = email_service.send_user_payment_receipt(\n        user_email="buyer@example.com",\n        payment_type="item_payment",\n        amount_ngn=7500,\n        lobby_id=4,\n        reference="unicart_item_1_2_safe",\n        item_id=2,\n        item_link="https://example.com/item",\n    )\n\n    assert sent is True\n    assert captured["to"] == "buyer@example.com"\n    assert "Payment confirmed" in captured["subject"]\n    assert "₦7,500" in captured["html"]\n    assert "unicart_item_1_2_safe" in captured["html"]\n\n\ndef test_batch_status_notification_reports_delivery_result(monkeypatch):\n    monkeypatch.setattr(email_service, "_send", lambda *_args, **_kwargs: True)\n    assert email_service.send_user_batch_status_update(\n        user_email="buyer@example.com",\n        lobby_id=7,\n        new_status="processing",\n        my_paid_item_count=1,\n        my_paid_total=5000,\n        item_links=["https://example.com/item"],\n    ) is True\n''', encoding="utf-8")
+          PY
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run full backend tests
+        run: python -m pytest -q
+
+      - name: Run security preflight
+        run: python scripts/security_preflight.py
+
+      - name: Commit verified notification fix
+        shell: bash
+        run: |
+          rm .github/workflows/restore-notification-lifecycle.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/routers/lobbies.py app/routers/payments.py app/email_service.py app/gmail_api_transport.py tests/test_authorization_security.py tests/test_notification_regression.py .github/workflows/restore-notification-lifecycle.yml
+          git commit -m "Restore transactional email lifecycle"
+          git push origin HEAD:main
