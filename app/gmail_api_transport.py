@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 import time
+from html import unescape
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -13,6 +15,15 @@ logger = logging.getLogger("unicart.email")
 FROM_NAME = "UniCart"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+
+
+def _plain_text_from_html(html_body: str) -> str:
+    """Create a readable text alternative for mail clients and spam filters."""
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</h[1-6]>", "\n", html_body)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
 
 
 def _oauth_values() -> tuple[str, str, str]:
@@ -35,7 +46,9 @@ def _send_via_gmail_api(to_email: str, subject: str, html_body: str) -> bool:
     msg["Subject"] = subject
     msg["From"] = f"{FROM_NAME} <{gmail_user}>"
     msg["To"] = to_email
-    msg.attach(MIMEText(html_body, "html"))
+    msg["Reply-To"] = gmail_user
+    msg.attach(MIMEText(_plain_text_from_html(html_body), "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
     raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
 
     for attempt in range(1, 4):

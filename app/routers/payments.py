@@ -22,6 +22,7 @@ from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user, require_admin, require_verified_student
 from app.email_service import send_user_payment_receipt
+from app.notification_recipients import send_to_user_addresses
 from app.models import (
     FinancialAuditEvent,
     GatewayTransactionClaim,
@@ -111,18 +112,18 @@ async def _send_verified_payment_receipt(
     item_id: int | None = None,
     item_link: str | None = None,
 ) -> None:
-    """Best-effort receipt delivery; email failure never rolls back a payment."""
+    """Best-effort receipt to account email + verified PAU email."""
     try:
-        user_email = (
-            await db.execute(select(User.email).where(User.id == user_id))
+        owner = (
+            await db.execute(select(User).where(User.id == user_id))
         ).scalar_one_or_none()
-        if not user_email:
-            logger.error("Payment receipt skipped: user_id=%s has no email", user_id)
+        if not owner:
+            logger.error("Payment receipt skipped: user_id=%s not found", user_id)
             return
 
-        sent = await asyncio.to_thread(
+        results = await send_to_user_addresses(
+            owner,
             send_user_payment_receipt,
-            user_email=user_email,
             payment_type=payment_type,
             amount_ngn=int(amount_ngn),
             lobby_id=lobby_id,
@@ -130,12 +131,14 @@ async def _send_verified_payment_receipt(
             item_id=item_id,
             item_link=item_link,
         )
-        if not sent:
+        if not results or not all(results.values()):
             logger.error(
-                "Payment receipt delivery failed user_id=%s lobby_id=%s type=%s",
+                "Payment receipt delivery incomplete user_id=%s lobby_id=%s type=%s sent=%s/%s",
                 user_id,
                 lobby_id,
                 payment_type,
+                sum(1 for ok in results.values() if ok),
+                len(results),
             )
     except Exception:
         logger.exception(
@@ -144,7 +147,6 @@ async def _send_verified_payment_receipt(
             lobby_id,
             payment_type,
         )
-
 
 def _render_callback_page(
     *, title: str, message: str, status: str, reference: str | None = None,

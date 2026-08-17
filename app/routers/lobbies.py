@@ -10,6 +10,7 @@ from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user, require_verified_student, require_admin
+from app.notification_recipients import send_to_user_addresses
 from app.models import (
     Lobby, LobbyItem, LobbyPass, LobbyStatus, PassStatus,
     PaymentStatus, PaymentTransaction, User, ItemPaymentStatus,
@@ -176,7 +177,7 @@ async def maybe_open_next_main_lobby(
 
 
 async def send_trigger_emails(db: AsyncSession, lobby: Lobby) -> None:
-    """Send trigger notification to admin and all affected users."""
+    """Send MOV/target notification to admin and both verified user addresses."""
     try:
         successful_payments = (
             await db.execute(
@@ -192,7 +193,7 @@ async def send_trigger_emails(db: AsyncSession, lobby: Lobby) -> None:
         unique_paying = len({p.user_id for p in successful_payments})
 
         if ADMIN_EMAIL:
-            send_admin_lobby_triggered(
+            sent_admin = send_admin_lobby_triggered(
                 admin_email=ADMIN_EMAIL,
                 lobby_id=lobby.id,
                 target_amount=lobby.target_item_amount,
@@ -201,10 +202,12 @@ async def send_trigger_emails(db: AsyncSession, lobby: Lobby) -> None:
                 total_revenue_ngn=total_revenue,
                 unique_paying_members=unique_paying,
             )
+            if not sent_admin:
+                logger.error("MOV admin email delivery failed for lobby_id=%s", lobby.id)
 
         paid_items_rows = (
             await db.execute(
-                select(LobbyItem, User.email)
+                select(LobbyItem, User)
                 .join(User, User.id == LobbyItem.user_id)
                 .where(
                     LobbyItem.lobby_id == lobby.id,
@@ -214,14 +217,17 @@ async def send_trigger_emails(db: AsyncSession, lobby: Lobby) -> None:
             )
         ).all()
 
-        user_items: dict[str, list] = {}
-        for item, email in paid_items_rows:
-            user_items.setdefault(email, []).append(item)
+        user_items: dict[int, tuple[User, list[LobbyItem]]] = {}
+        for item, owner in paid_items_rows:
+            if owner.id not in user_items:
+                user_items[owner.id] = (owner, [])
+            user_items[owner.id][1].append(item)
 
-        for email, items in user_items.items():
+        for owner, items in user_items.values():
             paid_total = sum(i.item_amount for i in items)
-            send_user_lobby_triggered(
-                user_email=email,
+            results = await send_to_user_addresses(
+                owner,
+                send_user_lobby_triggered,
                 lobby_id=lobby.id,
                 target_amount=lobby.target_item_amount,
                 final_amount=lobby.current_item_amount,
@@ -229,17 +235,23 @@ async def send_trigger_emails(db: AsyncSession, lobby: Lobby) -> None:
                 my_paid_total=paid_total,
                 item_links=[i.item_link for i in items],
             )
-
-    except Exception as e:
-        logger.error(f"Failed to send trigger emails for lobby {lobby.id}: {e}")
-
+            if not results or not all(results.values()):
+                logger.error(
+                    "MOV user notification incomplete lobby_id=%s user_id=%s sent=%s/%s",
+                    lobby.id,
+                    owner.id,
+                    sum(1 for ok in results.values() if ok),
+                    len(results),
+                )
+    except Exception:
+        logger.exception("Failed to send trigger emails for lobby %s", lobby.id)
 
 async def send_status_update_emails(db: AsyncSession, lobby: Lobby) -> None:
-    """Send status update emails to all users with paid items in this lobby."""
+    """Send batch-stage updates to account email and verified PAU email."""
     try:
         paid_items_rows = (
             await db.execute(
-                select(LobbyItem, User.email)
+                select(LobbyItem, User)
                 .join(User, User.id == LobbyItem.user_id)
                 .where(
                     LobbyItem.lobby_id == lobby.id,
@@ -249,24 +261,34 @@ async def send_status_update_emails(db: AsyncSession, lobby: Lobby) -> None:
             )
         ).all()
 
-        user_items: dict[str, list] = {}
-        for item, email in paid_items_rows:
-            user_items.setdefault(email, []).append(item)
+        user_items: dict[int, tuple[User, list[LobbyItem]]] = {}
+        for item, owner in paid_items_rows:
+            if owner.id not in user_items:
+                user_items[owner.id] = (owner, [])
+            user_items[owner.id][1].append(item)
 
-        for email, items in user_items.items():
+        for owner, items in user_items.values():
             paid_total = sum(i.item_amount for i in items)
-            send_user_batch_status_update(
-                user_email=email,
+            results = await send_to_user_addresses(
+                owner,
+                send_user_batch_status_update,
                 lobby_id=lobby.id,
                 new_status=lobby.status.value,
                 my_paid_item_count=len(items),
                 my_paid_total=paid_total,
                 item_links=[i.item_link for i in items],
             )
-
-    except Exception as e:
-        logger.error(f"Failed to send status update emails for lobby {lobby.id}: {e}")
-
+            if not results or not all(results.values()):
+                logger.error(
+                    "Batch status email incomplete lobby_id=%s user_id=%s status=%s sent=%s/%s",
+                    lobby.id,
+                    owner.id,
+                    lobby.status.value,
+                    sum(1 for ok in results.values() if ok),
+                    len(results),
+                )
+    except Exception:
+        logger.exception("Failed to send status update emails for lobby %s", lobby.id)
 
 def _make_item_response(item: LobbyItem) -> MyLobbyItemResponse:
     return MyLobbyItemResponse(
@@ -803,19 +825,24 @@ async def admin_force_remove_item(
         f"{lobby is not None and lobby.status != LobbyStatus.open and lobby.current_item_amount < lobby.target_item_amount}"
     )
 
-    # Email the affected user
-    if owner_email:
-        try:
-            send_user_item_force_removed(
-                user_email=owner_email,
-                item_id=item_id,
-                lobby_id=lobby_id,
-                item_link=item_link,
-                item_amount=item_amount,
-                was_paid=was_paid,
+    # Email both the account address and verified PAU address.
+    if item_owner:
+        results = await send_to_user_addresses(
+            item_owner,
+            send_user_item_force_removed,
+            item_id=item_id,
+            lobby_id=lobby_id,
+            item_link=item_link,
+            item_amount=item_amount,
+            was_paid=was_paid,
+        )
+        if not results or not all(results.values()):
+            logger.error(
+                "Force-remove user notification incomplete item_id=%s sent=%s/%s",
+                item_id,
+                sum(1 for ok in results.values() if ok),
+                len(results),
             )
-        except Exception as e:
-            logger.error(f"Failed to send force-remove user email: {e}")
 
     # Email the admin (audit log)
     if ADMIN_EMAIL:
