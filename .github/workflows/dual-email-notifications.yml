@@ -1,6 +1,6 @@
 name: Dual Email Notifications
 
-on:
+"on":
   push:
     branches:
       - main
@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      ENVIRONMENT: development
-      DATABASE_URL: sqlite+aiosqlite:///:memory:
-      SECRET_KEY: dual-email-ci-secret-key-long-enough-for-tests
+      ENVIRONMENT: "development"
+      DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+      SECRET_KEY: "dual-email-ci-secret-key-long-enough-for-tests"
       DEBUG_RETURN_PAU_CODE: "false"
 
     steps:
@@ -31,7 +31,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
+          cache: "pip"
 
       - name: Apply patch
         run: python scripts/apply_dual_email_patch.py
