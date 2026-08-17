@@ -352,7 +352,7 @@ async def test_late_entry_fee_moves_customer_to_current_open_lobby(db_session):
     db_session.add(payment)
     await db_session.commit()
 
-    joined = await _mark_entry_payment_success(
+    processed, joined = await _mark_entry_payment_success(
         db_session,
         payment=payment,
         flw_data=successful_transaction(tx_id="late-entry-gw", ref="late-entry-ref", amount=2000),
@@ -370,6 +370,7 @@ async def test_late_entry_fee_moves_customer_to_current_open_lobby(db_session):
         )
     ).scalar_one()
 
+    assert processed is True
     assert joined is True
     assert active_pass.lobby_id == new_lobby.id
     assert payment.lobby_id == new_lobby.id

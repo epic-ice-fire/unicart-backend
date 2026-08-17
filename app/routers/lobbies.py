@@ -96,8 +96,13 @@ async def get_current_open_main_lobby_or_create(db: AsyncSession) -> Lobby:
     return lobby
 
 
-async def recalculate_lobby_totals(db: AsyncSession, lobby: Lobby) -> None:
-    """Only PAID items count toward the vault goal."""
+async def recalculate_lobby_totals(
+    db: AsyncSession,
+    lobby: Lobby,
+    *,
+    allow_trigger: bool = True,
+) -> None:
+    """Recalculate paid totals; only intentional write paths may trigger a batch."""
     member_count_result = await db.execute(
         select(func.count()).select_from(LobbyPass)
         .where(LobbyPass.lobby_id == lobby.id, LobbyPass.status == PassStatus.active)
@@ -114,7 +119,7 @@ async def recalculate_lobby_totals(db: AsyncSession, lobby: Lobby) -> None:
     )
     lobby.current_item_amount = item_total_result.scalar_one() or 0
 
-    if lobby.current_item_amount >= lobby.target_item_amount:
+    if allow_trigger and lobby.current_item_amount >= lobby.target_item_amount:
         if lobby.status == LobbyStatus.open:
             lobby.status = LobbyStatus.triggered
 
@@ -364,7 +369,7 @@ async def main_lobby_snapshot(
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db)
-    await recalculate_lobby_totals(db, lobby)
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
     return LobbySnapshotResponse(
@@ -381,7 +386,7 @@ async def main_lobby_details(
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db)
-    await recalculate_lobby_totals(db, lobby)
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
 
     active_pass = (
         await db.execute(
@@ -587,7 +592,7 @@ async def join_main_lobby(
             details={"source": "join_endpoint"},
         )
 
-    await recalculate_lobby_totals(db, lobby)
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
 
@@ -627,7 +632,7 @@ async def add_item_to_main_lobby(
     )
     db.add(item)
     await db.flush()
-    await recalculate_lobby_totals(db, lobby)
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
 
@@ -682,7 +687,7 @@ async def remove_my_item_from_main_lobby(
     item.is_active = False
     item.removed_at = _utcnow()
     await db.flush()
-    await recalculate_lobby_totals(db, lobby)
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
 
@@ -758,7 +763,7 @@ async def admin_force_remove_item(
     if lobby:
         if lobby.status == LobbyStatus.open:
             # Safe to fully recalculate — can only move forward, never back
-            await recalculate_lobby_totals(db, lobby)
+            await recalculate_lobby_totals(db, lobby, allow_trigger=False)
         else:
             # Already triggered or beyond — only update the amount, protect status
             item_total_result = await db.execute(
@@ -980,7 +985,7 @@ async def admin_dashboard(
     db: AsyncSession = Depends(get_db),
 ):
     current_open_lobby = await get_current_open_main_lobby_or_create(db)
-    await recalculate_lobby_totals(db, current_open_lobby)
+    await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(current_open_lobby)
 
@@ -1218,7 +1223,7 @@ async def leave_main_lobby(
         item.removed_at = _utcnow()
 
     await db.flush()
-    await recalculate_lobby_totals(db, lobby)
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await record_audit_event(
         db,
         event_type="LOBBY_PASS_LEFT",

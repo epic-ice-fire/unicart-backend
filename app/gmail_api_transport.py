@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -35,53 +36,74 @@ def _send_via_gmail_api(to_email: str, subject: str, html_body: str) -> bool:
     msg["From"] = f"{FROM_NAME} <{gmail_user}>"
     msg["To"] = to_email
     msg.attach(MIMEText(html_body, "html"))
+    raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
 
-    try:
-        with httpx.Client(timeout=8.0) as client:
-            token_response = client.post(
-                TOKEN_URL,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                    "grant_type": "refresh_token",
-                },
-            )
-            token_response.raise_for_status()
+    for attempt in range(1, 4):
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                token_response = client.post(
+                    TOKEN_URL,
+                    data={
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "refresh_token": refresh_token,
+                        "grant_type": "refresh_token",
+                    },
+                )
+                token_response.raise_for_status()
+                access_token = token_response.json().get("access_token")
+                if not access_token:
+                    logger.error("[UniCart Email] Gmail OAuth token response had no access token.")
+                    return False
 
-            access_token = token_response.json().get("access_token")
-            if not access_token:
-                logger.error("[UniCart Email] Gmail OAuth token response contained no access token.")
+                send_response = client.post(
+                    SEND_URL,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json={"raw": raw_message},
+                )
+                send_response.raise_for_status()
+
+            logger.info("[UniCart Email] Sent via Gmail API → %s | %s", to_email, subject)
+            return True
+
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            retryable = status_code == 429 or status_code >= 500
+            if not retryable or attempt == 3:
+                logger.error(
+                    "[UniCart Email] Gmail API HTTP %s while sending to %s (attempt %s/3)",
+                    status_code,
+                    to_email,
+                    attempt,
+                )
                 return False
-
-            raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
-            send_response = client.post(
-                SEND_URL,
-                headers={"Authorization": f"Bearer {access_token}"},
-                json={"raw": raw_message},
+            logger.warning(
+                "[UniCart Email] Temporary Gmail API HTTP %s for %s; retrying (%s/3)",
+                status_code,
+                to_email,
+                attempt,
             )
-            send_response.raise_for_status()
 
-        logger.info(
-            "[UniCart Email] ✅ Sent via Gmail API → %s | %s",
-            to_email,
-            subject,
-        )
-        return True
-    except httpx.HTTPStatusError as exc:
-        logger.error(
-            "[UniCart Email] ❌ Gmail API HTTP %s while sending to %s",
-            exc.response.status_code,
-            to_email,
-        )
-        return False
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.error(
-            "[UniCart Email] ❌ Gmail API request failed for %s: %s",
-            to_email,
-            exc,
-        )
-        return False
+        except httpx.HTTPError:
+            if attempt == 3:
+                logger.exception(
+                    "[UniCart Email] Gmail API network failure for %s after 3 attempts",
+                    to_email,
+                )
+                return False
+            logger.warning(
+                "[UniCart Email] Temporary Gmail API network failure for %s; retrying (%s/3)",
+                to_email,
+                attempt,
+            )
+
+        except (ValueError, KeyError):
+            logger.exception("[UniCart Email] Invalid Gmail API response while sending to %s", to_email)
+            return False
+
+        time.sleep(0.5 * attempt)
+
+    return False
 
 
 def install_gmail_api_transport() -> bool:

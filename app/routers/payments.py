@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -20,6 +21,7 @@ from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user, require_admin, require_verified_student
+from app.email_service import send_user_payment_receipt
 from app.models import (
     FinancialAuditEvent,
     GatewayTransactionClaim,
@@ -96,6 +98,52 @@ def _flw_headers() -> dict[str, str]:
         "Authorization": f"Bearer {settings.FLW_SECRET_KEY}",
         "Content-Type": "application/json",
     }
+
+
+async def _send_verified_payment_receipt(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    payment_type: str,
+    amount_ngn: int,
+    lobby_id: int,
+    reference: str,
+    item_id: int | None = None,
+    item_link: str | None = None,
+) -> None:
+    """Best-effort receipt delivery; email failure never rolls back a payment."""
+    try:
+        user_email = (
+            await db.execute(select(User.email).where(User.id == user_id))
+        ).scalar_one_or_none()
+        if not user_email:
+            logger.error("Payment receipt skipped: user_id=%s has no email", user_id)
+            return
+
+        sent = await asyncio.to_thread(
+            send_user_payment_receipt,
+            user_email=user_email,
+            payment_type=payment_type,
+            amount_ngn=int(amount_ngn),
+            lobby_id=lobby_id,
+            reference=reference,
+            item_id=item_id,
+            item_link=item_link,
+        )
+        if not sent:
+            logger.error(
+                "Payment receipt delivery failed user_id=%s lobby_id=%s type=%s",
+                user_id,
+                lobby_id,
+                payment_type,
+            )
+    except Exception:
+        logger.exception(
+            "Unexpected payment receipt failure user_id=%s lobby_id=%s type=%s",
+            user_id,
+            lobby_id,
+            payment_type,
+        )
 
 
 def _render_callback_page(
@@ -284,13 +332,22 @@ async def _resolve_stale_entry_checkout(
     if state == "found" and flw_data is not None:
         flw_status = str(flw_data.get("status") or "").lower()
         if flw_status == "successful":
-            await _mark_entry_payment_success(
+            processed_now, _ = await _mark_entry_payment_success(
                 db,
                 payment=payment,
                 flw_data=flw_data,
                 source="stale_checkout_recovery",
             )
             await db.commit()
+            if processed_now:
+                await _send_verified_payment_receipt(
+                    db,
+                    user_id=payment.user_id,
+                    payment_type="entry_fee",
+                    amount_ngn=payment.amount_ngn,
+                    lobby_id=payment.lobby_id,
+                    reference=payment.reference,
+                )
             raise HTTPException(
                 409,
                 "Your earlier payment was already completed and has now been applied. Refresh UniCart.",
@@ -499,7 +556,7 @@ async def _mark_entry_payment_success(
     payment: PaymentTransaction,
     flw_data: dict,
     source: str = "unknown",
-) -> bool:
+) -> tuple[bool, bool]:
     # Re-lock the authoritative row only after the external Flutterwave call.
     # PostgreSQL will serialize competing callback/webhook/manual-verification
     # requests here. SQLite still gets protection from unique DB indexes/claims.
@@ -538,7 +595,7 @@ async def _mark_entry_payment_success(
         raise HTTPException(404, "Related lobby not found.")
 
     if locked_payment.status == PaymentStatus.success:
-        return False
+        return False, False
 
     membership_lobby = lobby
     transferred_to_next_lobby = False
@@ -603,7 +660,7 @@ async def _mark_entry_payment_success(
             details={"source": source},
         )
 
-    return joined_now
+    return True, joined_now
 
 
 async def _mark_item_payment_success_and_check_trigger(
@@ -845,9 +902,20 @@ async def verify_entry_fee_payment(
             joined_lobby=False,
         )
 
-    joined_now = await _mark_entry_payment_success(db, payment=payment, flw_data=flw_data, source="manual_verify")
+    processed_now, joined_now = await _mark_entry_payment_success(
+        db, payment=payment, flw_data=flw_data, source="manual_verify"
+    )
     await db.commit()
     await db.refresh(payment)
+    if processed_now:
+        await _send_verified_payment_receipt(
+            db,
+            user_id=payment.user_id,
+            payment_type="entry_fee",
+            amount_ngn=payment.amount_ngn,
+            lobby_id=payment.lobby_id,
+            reference=payment.reference,
+        )
 
     return PaymentVerifyResponse(
         message="Entry fee verified. You've joined the lobby!",
@@ -1024,6 +1092,18 @@ async def verify_item_payment(
     await db.commit()
     await db.refresh(item)
 
+    if processed_now:
+        await _send_verified_payment_receipt(
+            db,
+            user_id=item.user_id,
+            payment_type="item_payment",
+            amount_ngn=item.item_payment_amount_ngn or item.item_amount,
+            lobby_id=item.lobby_id,
+            reference=item.item_payment_reference or reference,
+            item_id=item.id,
+            item_link=item.item_link,
+        )
+
     if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:
         await send_trigger_emails(db, lobby)
 
@@ -1124,8 +1204,19 @@ async def flutterwave_callback(
 
     if payment:
         if payment.status != PaymentStatus.success:
-            await _mark_entry_payment_success(db, payment=payment, flw_data=flw_data, source="callback")
+            processed_now, _ = await _mark_entry_payment_success(
+                db, payment=payment, flw_data=flw_data, source="callback"
+            )
             await db.commit()
+            if processed_now:
+                await _send_verified_payment_receipt(
+                    db,
+                    user_id=payment.user_id,
+                    payment_type="entry_fee",
+                    amount_ngn=payment.amount_ngn,
+                    lobby_id=payment.lobby_id,
+                    reference=payment.reference,
+                )
         return _render_callback_page(
             title="Payment successful",
             message="Your entry fee is confirmed. Return to UniCart to continue.",
@@ -1146,6 +1237,18 @@ async def flutterwave_callback(
             source="callback",
         )
         await db.commit()
+
+        if processed_now:
+            await _send_verified_payment_receipt(
+                db,
+                user_id=item.user_id,
+                payment_type="item_payment",
+                amount_ngn=item.item_payment_amount_ngn or item.item_amount,
+                lobby_id=item.lobby_id,
+                reference=item.item_payment_reference or tx_ref,
+                item_id=item.id,
+                item_link=item.item_link,
+            )
 
         if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:
             await send_trigger_emails(db, lobby)
@@ -1234,8 +1337,19 @@ async def flutterwave_webhook(
             expected_reference=payment.reference,
             expected_amount_ngn=payment.amount_ngn,
         )
-        await _mark_entry_payment_success(db, payment=payment, flw_data=flw_data, source="webhook")
+        processed_now, _ = await _mark_entry_payment_success(
+            db, payment=payment, flw_data=flw_data, source="webhook"
+        )
         await db.commit()
+        if processed_now:
+            await _send_verified_payment_receipt(
+                db,
+                user_id=payment.user_id,
+                payment_type="entry_fee",
+                amount_ngn=payment.amount_ngn,
+                lobby_id=payment.lobby_id,
+                reference=payment.reference,
+            )
         return {"message": "Entry fee webhook processed."}
 
     _validate_flw_transaction(
@@ -1253,6 +1367,18 @@ async def flutterwave_webhook(
         db, item=item, flw_data=flw_data, source="webhook"
     )
     await db.commit()
+
+    if processed_now:
+        await _send_verified_payment_receipt(
+            db,
+            user_id=item.user_id,
+            payment_type="item_payment",
+            amount_ngn=item.item_payment_amount_ngn or item.item_amount,
+            lobby_id=item.lobby_id,
+            reference=item.item_payment_reference or tx_ref,
+            item_id=item.id,
+            item_link=item.item_link,
+        )
 
     if processed_now and lobby and lobby.status == LobbyStatus.triggered and not triggered_before:
         await send_trigger_emails(db, lobby)

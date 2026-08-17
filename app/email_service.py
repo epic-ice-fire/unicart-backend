@@ -15,6 +15,7 @@ To get a Gmail App Password:
 import logging
 import smtplib
 import ssl
+from html import escape
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -151,6 +152,56 @@ def send_pau_verification_code(
     return _send(pau_email, subject, _base_template(content))
 
 
+def send_user_payment_receipt(
+    user_email: str,
+    payment_type: str,
+    amount_ngn: int,
+    lobby_id: int,
+    reference: str,
+    item_id: int | None = None,
+    item_link: str | None = None,
+) -> bool:
+    """Send a UniCart-owned receipt after server-side Flutterwave verification."""
+    kind = "Entry fee" if payment_type == "entry_fee" else "Item payment"
+    safe_reference = escape(reference)
+    item_html = ""
+    if item_id is not None:
+        item_html += f'<span class="pill blue">Item: #{item_id}</span>'
+    if item_link:
+        safe_link = escape(item_link, quote=True)
+        item_html += (
+            '<hr class="divider"><h2>Item</h2>'
+            f'<div class="item-box"><a href="{safe_link}">{safe_link}</a></div>'
+        )
+
+    subject = f"UniCart — Payment confirmed · {kind}"
+    content = f"""
+    <div class="header">
+      <h1>Payment confirmed</h1>
+      <p>UniCart has independently verified your Flutterwave payment.</p>
+    </div>
+
+    <p>Your payment has been securely verified and recorded by UniCart.</p>
+
+    <div>
+      <span class="pill green">Paid: ₦{int(amount_ngn):,}</span>
+      <span class="pill blue">Batch: #{lobby_id}</span>
+      <span class="pill">{kind}</span>
+      {item_html}
+    </div>
+
+    <hr class="divider">
+    <h2>Reference</h2>
+    <div class="item-box">{safe_reference}</div>
+
+    <p style="color: #667085; font-size: 13px;">
+      Keep this email for your records. UniCart only sends this receipt after the
+      backend verifies the exact payment reference, amount and NGN currency with Flutterwave.
+    </p>
+    """
+    return _send(user_email, subject, _base_template(content))
+
+
 # ─── Admin: Item force-removed notification ────────────────────────────────────
 
 def send_admin_item_force_removed(
@@ -162,7 +213,7 @@ def send_admin_item_force_removed(
     was_paid: bool,
     user_email: str,
     removed_by: str,
-) -> None:
+) -> bool:
     subject = f"⚠️ UniCart Admin — Item #{item_id} force-removed from Lobby #{lobby_id}"
     paid_note = (
         '<span class="pill red">⚠️ Item was PAID — no refund issued</span>'
@@ -196,7 +247,7 @@ def send_admin_item_force_removed(
       ⚠️ No refund has been issued per UniCart's no-refund policy for fraudulent submissions.
     </p>
     """
-    _send(admin_email, subject, _base_template(content))
+    return _send(admin_email, subject, _base_template(content))
 
 
 # ─── User: Item force-removed notification ─────────────────────────────────────
@@ -208,7 +259,7 @@ def send_user_item_force_removed(
     item_link: str,
     item_amount: int,
     was_paid: bool,
-) -> None:
+) -> bool:
     subject = f"UniCart — Important notice regarding your item in Batch #{lobby_id}"
     refund_note = ""
     if was_paid:
@@ -272,7 +323,7 @@ def send_user_item_force_removed(
       Thank you for your understanding and continued participation in UniCart.
     </p>
     """
-    _send(user_email, subject, _base_template(content))
+    return _send(user_email, subject, _base_template(content))
 
 
 # ─── Lobby triggered: Admin email ──────────────────────────────────────────────
@@ -285,7 +336,7 @@ def send_admin_lobby_triggered(
     member_count: int,
     total_revenue_ngn: int,
     unique_paying_members: int,
-) -> None:
+) -> bool:
     subject = f"🎯 UniCart — Lobby #{lobby_id} has reached its target"
     content = f"""
     <div class="header">
@@ -319,7 +370,7 @@ def send_admin_lobby_triggered(
       Only paid and locked items are included in the order.
     </p>
     """
-    _send(admin_email, subject, _base_template(content))
+    return _send(admin_email, subject, _base_template(content))
 
 
 # ─── Lobby triggered: User email ───────────────────────────────────────────────
@@ -332,7 +383,7 @@ def send_user_lobby_triggered(
     my_paid_item_count: int,
     my_paid_total: int,
     item_links: list[str],
-) -> None:
+) -> bool:
     subject = f"🛒 UniCart — Your batch #{lobby_id} has been triggered!"
 
     items_html = ""
@@ -378,7 +429,7 @@ def send_user_lobby_triggered(
       Thank you for participating in UniCart campus group buying.
     </p>
     """
-    _send(user_email, subject, _base_template(content))
+    return _send(user_email, subject, _base_template(content))
 
 
 # ─── Status change: User email ─────────────────────────────────────────────────
@@ -424,7 +475,7 @@ def send_user_batch_status_update(
     my_paid_item_count: int,
     my_paid_total: int,
     item_links: list[str],
-) -> None:
+) -> bool:
     title, badge = STATUS_TITLES.get(
         new_status, (f"Batch #{lobby_id} update", new_status.replace("_", " ").title())
     )
@@ -460,4 +511,4 @@ def send_user_batch_status_update(
 
     {items_html if item_links else ""}
     """
-    _send(user_email, subject, _base_template(content))
+    return _send(user_email, subject, _base_template(content))
