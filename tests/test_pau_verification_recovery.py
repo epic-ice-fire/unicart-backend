@@ -34,7 +34,7 @@ async def db_session():
 
 
 @pytest.fixture
-def request():
+def http_request():
     return Request(
         {
             "type": "http",
@@ -64,7 +64,7 @@ def disable_rate_limits(monkeypatch):
 @pytest.mark.asyncio
 async def test_stale_unverified_pau_claim_can_be_reclaimed(
     db_session,
-    request,
+    http_request,
     monkeypatch,
 ):
     stale_owner = User(
@@ -88,7 +88,7 @@ async def test_stale_unverified_pau_claim_can_be_reclaimed(
 
     response = await auth.request_pau_code(
         payload=PauLinkRequest(pau_email="student@pau.edu.ng"),
-        request=request,
+        request=http_request,
         user=current_user,
         db=db_session,
     )
@@ -106,7 +106,7 @@ async def test_stale_unverified_pau_claim_can_be_reclaimed(
 @pytest.mark.asyncio
 async def test_verified_pau_owner_cannot_be_reclaimed(
     db_session,
-    request,
+    http_request,
 ):
     verified_owner = User(
         email="verified@example.com",
@@ -125,7 +125,7 @@ async def test_verified_pau_owner_cannot_be_reclaimed(
     with pytest.raises(HTTPException) as exc:
         await auth.request_pau_code(
             payload=PauLinkRequest(pau_email="verified@pau.edu.ng"),
-            request=request,
+            request=http_request,
             user=current_user,
             db=db_session,
         )
@@ -139,7 +139,7 @@ async def test_verified_pau_owner_cannot_be_reclaimed(
 @pytest.mark.asyncio
 async def test_active_unverified_claim_cannot_be_stolen(
     db_session,
-    request,
+    http_request,
 ):
     active_owner = User(
         email="active@example.com",
@@ -160,7 +160,7 @@ async def test_active_unverified_claim_cannot_be_stolen(
     with pytest.raises(HTTPException) as exc:
         await auth.request_pau_code(
             payload=PauLinkRequest(pau_email="active@pau.edu.ng"),
-            request=request,
+            request=http_request,
             user=current_user,
             db=db_session,
         )
@@ -174,7 +174,7 @@ async def test_active_unverified_claim_cannot_be_stolen(
 @pytest.mark.asyncio
 async def test_email_send_failure_releases_unverified_pau_claim(
     db_session,
-    request,
+    http_request,
     monkeypatch,
 ):
     user = User(
@@ -192,7 +192,7 @@ async def test_email_send_failure_releases_unverified_pau_claim(
     with pytest.raises(HTTPException) as exc:
         await auth.request_pau_code(
             payload=PauLinkRequest(pau_email="failed@pau.edu.ng"),
-            request=request,
+            request=http_request,
             user=user,
             db=db_session,
         )
@@ -207,7 +207,7 @@ async def test_email_send_failure_releases_unverified_pau_claim(
 @pytest.mark.asyncio
 async def test_expired_code_releases_unverified_pau_email(
     db_session,
-    request,
+    http_request,
 ):
     user = User(
         email="expired@example.com",
@@ -223,7 +223,7 @@ async def test_expired_code_releases_unverified_pau_email(
     with pytest.raises(HTTPException) as exc:
         await auth.verify_pau_code(
             payload=PauVerifyRequest(code="123456"),
-            request=request,
+            request=http_request,
             user=user,
             db=db_session,
         )
