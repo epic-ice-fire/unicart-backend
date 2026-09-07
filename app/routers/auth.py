@@ -90,6 +90,23 @@ def _email_delivery_configured() -> bool:
     return gmail_api_ready or smtp_ready
 
 
+def _pau_claim_is_active(user: User, now: datetime) -> bool:
+    return bool(
+        not user.is_student_verified
+        and user.pau_verification_code
+        and user.pau_verification_expires_at
+        and user.pau_verification_expires_at > now
+    )
+
+
+def _clear_unverified_pau_claim(user: User) -> None:
+    if user.is_student_verified:
+        return
+    user.student_pau_email = None
+    user.pau_verification_code = None
+    user.pau_verification_expires_at = None
+
+
 async def _issue_session(
     *,
     db: AsyncSession,
@@ -376,6 +393,7 @@ async def request_pau_code(
             detail="Use a valid approved PAU email address.",
         )
 
+    now = _utcnow()
     existing_owner = (
         await db.execute(
             select(User).where(
@@ -386,17 +404,30 @@ async def request_pau_code(
     ).scalar_one_or_none()
 
     if existing_owner:
-        raise HTTPException(
-            status_code=409,
-            detail="Unable to link this PAU email.",
-        )
+        if existing_owner.is_student_verified or _pau_claim_is_active(existing_owner, now):
+            raise HTTPException(
+                status_code=409,
+                detail="Unable to link this PAU email.",
+            )
+
+        # A failed/expired verification must not reserve a school email forever.
+        # Release only unverified, inactive claims. Verified identities remain unique.
+        _clear_unverified_pau_claim(existing_owner)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Unable to link this PAU email.",
+            )
 
     code = _generate_pau_code()
     expires_minutes = settings.PAU_CODE_EXPIRES_MINUTES
 
     user.student_pau_email = pau_email
     user.pau_verification_code = _hash_pau_code(code)
-    user.pau_verification_expires_at = _utcnow() + timedelta(minutes=expires_minutes)
+    user.pau_verification_expires_at = now + timedelta(minutes=expires_minutes)
     user.is_student_verified = False
 
     try:
@@ -424,9 +455,9 @@ async def request_pau_code(
             logger.exception("Failed to send PAU verification email for user_id=%s", user.id)
 
     if not email_sent and not settings.DEBUG_RETURN_PAU_CODE:
-        # Fail closed. Never leak an OTP just because email delivery failed.
-        user.pau_verification_code = None
-        user.pau_verification_expires_at = None
+        # Fail closed. Never leak an OTP just because email delivery failed, and
+        # never leave an unverified PAU address stranded on this account.
+        _clear_unverified_pau_claim(user)
         await db.commit()
         raise HTTPException(
             status_code=503,
@@ -472,8 +503,7 @@ async def verify_pau_code(
 
     now = _utcnow()
     if now > user.pau_verification_expires_at:
-        user.pau_verification_code = None
-        user.pau_verification_expires_at = None
+        _clear_unverified_pau_claim(user)
         await db.commit()
         raise HTTPException(
             status_code=400,
