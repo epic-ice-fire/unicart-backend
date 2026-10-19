@@ -7,6 +7,7 @@ os.environ.setdefault("FLW_SECRET_KEY", "test-secret")
 os.environ.setdefault("FLW_SECRET_HASH", "test-webhook-hash")
 
 import pytest
+from fastapi import HTTPException
 import pytest_asyncio
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -103,7 +104,7 @@ async def test_campus_admin_cannot_switch_to_another_campus(db_session):
     db_session.add(admin)
     await db_session.commit()
 
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(HTTPException) as exc:
         await auth.select_university(
             payload=UniversitySelectRequest(university_code="pau"),
             user=admin,
