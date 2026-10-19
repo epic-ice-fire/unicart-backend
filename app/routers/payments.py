@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user, require_admin, require_university_selected
+from app.deps import require_admin, require_university_selected
 from app.email_service import send_user_payment_receipt
 from app.notification_recipients import send_to_user_addresses
 from app.models import (
@@ -865,7 +865,7 @@ async def initialize_entry_fee_payment(
 @router.get("/verify/{reference}", response_model=PaymentVerifyResponse)
 async def verify_entry_fee_payment(
     reference: str = Path(min_length=1, max_length=120),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     reference = _validate_reference_input(reference)
@@ -1055,7 +1055,7 @@ async def initialize_item_payment(
 @router.get("/items/verify/{reference}", response_model=ItemPaymentVerifyResponse)
 async def verify_item_payment(
     reference: str = Path(min_length=1, max_length=120),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     reference = _validate_reference_input(reference)
