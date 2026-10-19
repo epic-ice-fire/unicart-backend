@@ -60,7 +60,7 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     # Active campus selected by the account holder. This is a marketplace choice, not student verification.
-    university_code: Mapped[str | None] = mapped_column(String(32), nullable=True, default="pau", index=True)
+    university_code: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     student_pau_email: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     is_student_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     pau_verification_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
