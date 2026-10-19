@@ -18,7 +18,6 @@ jobs:
       ENVIRONMENT: "development"
       DATABASE_URL: "sqlite+aiosqlite:///:memory:"
       SECRET_KEY: "ci-secret-key-that-is-long-enough-for-unicart-tests"
-      DEBUG_RETURN_PAU_CODE: "false"
 
     steps:
       - name: Check out repository
