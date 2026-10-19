@@ -90,8 +90,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="UniCart API",
-    description="Campus group-buying platform — PAU edition",
-    version="1.0.0",
+    description="Multi-university campus group-buying platform",
+    version="1.1.0",
     lifespan=lifespan,
     docs_url=None if settings.is_production else "/docs",
     redoc_url=None if settings.is_production else "/redoc",
