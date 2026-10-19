@@ -645,7 +645,7 @@ async def join_main_lobby(
 @router.post("/main/items", response_model=AddItemResponse)
 async def add_item_to_main_lobby(
     payload: AddItemRequest,
-    user: User = Depends(require_verified_student),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
@@ -686,7 +686,7 @@ async def add_item_to_main_lobby(
 @router.post("/main/items/{item_id}/remove", response_model=RemoveItemResponse)
 async def remove_my_item_from_main_lobby(
     item_id: int,
-    user: User = Depends(require_verified_student),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
@@ -1233,7 +1233,7 @@ async def admin_update_batch_status(
 
 @router.post("/main/leave", response_model=LeaveLobbyResponse)
 async def leave_main_lobby(
-    user: User = Depends(require_verified_student),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
