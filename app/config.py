@@ -78,13 +78,6 @@ class Settings:
             "PUBLIC_APP_URL",
             default_public_app_url,
         ).strip().rstrip("/")
-        self.ALLOWED_EMAIL_DOMAINS: str = os.getenv(
-            "ALLOWED_EMAIL_DOMAINS", "pau.edu.ng",
-        )
-        self.PAU_CODE_EXPIRES_MINUTES: int = int(
-            os.getenv("PAU_CODE_EXPIRES_MINUTES", "10")
-        )
-        self.DEBUG_RETURN_PAU_CODE: bool = _env_bool("DEBUG_RETURN_PAU_CODE", False)
         self.ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "unicartbytekena@gmail.com")
         self.GMAIL_USER: str = os.getenv("GMAIL_USER", "").strip()
         self.GMAIL_APP_PASSWORD: str = os.getenv("GMAIL_APP_PASSWORD", "").strip()
@@ -120,8 +113,6 @@ class Settings:
         if self.is_production:
             if self.SECRET_KEY == _DEFAULT_DEV_SECRET or len(self.SECRET_KEY) < 32:
                 errors.append("SECRET_KEY must be a unique random value of at least 32 characters.")
-            if self.DEBUG_RETURN_PAU_CODE:
-                errors.append("DEBUG_RETURN_PAU_CODE must be false in production.")
             if self.AUTO_CREATE_TABLES:
                 errors.append("AUTO_CREATE_TABLES must be false in production; use migrations.")
             if self.DATABASE_URL.startswith("sqlite"):
@@ -187,8 +178,6 @@ class Settings:
             errors.append("MAX_ACTIVE_SESSIONS_PER_USER must be between 1 and 20.")
         if self.SESSION_RETENTION_DAYS < 1 or self.SESSION_RETENTION_DAYS > 365:
             errors.append("SESSION_RETENTION_DAYS must be between 1 and 365.")
-        if self.PAU_CODE_EXPIRES_MINUTES <= 0 or self.PAU_CODE_EXPIRES_MINUTES > 30:
-            errors.append("PAU_CODE_EXPIRES_MINUTES must be between 1 and 30.")
         if self.ENTRY_FEE_NGN <= 0 or self.TARGET_ITEM_AMOUNT_NGN <= 0:
             errors.append("Payment amounts must be positive.")
         flw_base = urlparse(self.FLW_BASE_URL)

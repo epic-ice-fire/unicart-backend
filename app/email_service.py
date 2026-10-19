@@ -122,36 +122,6 @@ def _base_template(content: str) -> str:
     """
 
 
-# ─── PAU Verification Email ─────────────────────────────────────────────────────
-
-def send_pau_verification_code(
-    pau_email: str,
-    code: str,
-    expires_minutes: int,
-) -> bool:
-    subject = "Your UniCart student verification code"
-    content = f"""
-    <div class="header">
-      <h1>Verify your PAU email</h1>
-      <p>Enter this code in the UniCart app to complete verification.</p>
-    </div>
-
-    <h2>Your verification code</h2>
-    <p>Use the code below to verify your Pan-Atlantic University email address.
-    This code expires in <strong>{expires_minutes} minutes</strong>.</p>
-
-    <div class="code-box">
-      <span>{code}</span>
-    </div>
-
-    <p style="color: #667085; font-size: 13px;">
-      If you did not request this code, please ignore this email.
-      Do not share this code with anyone.
-    </p>
-    """
-    return _send(pau_email, subject, _base_template(content))
-
-
 def send_user_payment_receipt(
     user_email: str,
     payment_type: str,

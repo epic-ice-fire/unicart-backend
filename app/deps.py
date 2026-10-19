@@ -69,13 +69,16 @@ async def get_current_user(
     return user
 
 
-async def require_verified_student(
+SUPPORTED_UNIVERSITY_CODES = {"pau", "augustine", "babcock"}
+
+
+async def require_university_selected(
     user: User = Depends(get_current_user),
 ) -> User:
-    if not user.is_student_verified or not user.student_pau_email:
+    if user.university_code not in SUPPORTED_UNIVERSITY_CODES:
         raise HTTPException(
-            status_code=403,
-            detail="Verify your PAU email to join/pay/post items.",
+            status_code=409,
+            detail="Choose a university before accessing its marketplace.",
         )
     return user
 
@@ -87,5 +90,10 @@ async def require_admin(
         raise HTTPException(
             status_code=403,
             detail="Admin access required.",
+        )
+    if user.university_code not in SUPPORTED_UNIVERSITY_CODES:
+        raise HTTPException(
+            status_code=409,
+            detail="Choose a university before accessing campus administration.",
         )
     return user

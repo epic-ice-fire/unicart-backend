@@ -1,5 +1,6 @@
 import ipaddress
 from urllib.parse import urlsplit
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -63,28 +64,11 @@ class MeResponse(BaseModel):
     id: int
     email: EmailStr
     is_admin: bool
-    is_student_verified: bool
-    student_pau_email: EmailStr | None
+    university_code: str | None
 
 
-class PauLinkRequest(BaseModel):
-    pau_email: EmailStr
-
-
-class PauVerifyRequest(BaseModel):
-    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
-
-
-class PauLinkResponse(BaseModel):
-    message: str
-    expires_in_seconds: int
-    dev_code: str | None = None
-
-
-class PauVerifyResponse(BaseModel):
-    message: str
-    student_pau_email: EmailStr
-    is_student_verified: bool
+class UniversitySelectRequest(BaseModel):
+    university_code: Literal["pau", "augustine", "babcock"]
 
 
 # =========================

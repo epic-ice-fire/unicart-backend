@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import Base
-from app.deps import get_current_user, require_admin
+from app.deps import get_current_user, require_admin, require_university_selected
 from app.models import (
     ItemPaymentStatus,
     Lobby,
@@ -77,9 +77,9 @@ def test_dev_admin_route_is_not_exposed():
     assert "/auth/dev/make-admin" not in paths
 
 
-def test_main_snapshot_requires_authentication():
+def test_main_snapshot_requires_authentication_and_campus_selection():
     dependencies = route_dependency_calls(lobbies.router, "/lobbies/main", "GET")
-    assert get_current_user in dependencies
+    assert require_university_selected in dependencies
 
 
 def test_every_admin_lobby_route_requires_admin_dependency():
@@ -108,6 +108,21 @@ async def test_normal_user_cannot_pass_admin_guard():
     with pytest.raises(HTTPException) as exc:
         await require_admin(user=user)
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_selected_campus_does_not_require_student_email_verification():
+    user = User(
+        email="campus-user@example.com",
+        password_hash="x",
+        university_code="babcock",
+        is_student_verified=False,
+        student_pau_email=None,
+    )
+
+    selected_user = await require_university_selected(user=user)
+
+    assert selected_user is user
 
 
 @pytest.mark.asyncio
@@ -171,14 +186,10 @@ async def test_user_cannot_initialize_payment_for_another_users_item(db_session)
     victim = User(
         email="victim3@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="victim3@pau.edu.ng",
     )
     attacker = User(
         email="attacker3@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="attacker3@pau.edu.ng",
     )
     lobby = Lobby(title="MAIN", target_item_amount=10000, status=LobbyStatus.open)
     db_session.add_all([victim, attacker, lobby])
@@ -209,14 +220,10 @@ async def test_user_cannot_remove_another_users_item(db_session):
     victim = User(
         email="victim4@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="victim4@pau.edu.ng",
     )
     attacker = User(
         email="attacker4@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="attacker4@pau.edu.ng",
     )
     lobby = Lobby(title="MAIN", target_item_amount=10000, status=LobbyStatus.open)
     db_session.add_all([victim, attacker, lobby])
@@ -257,8 +264,6 @@ async def test_new_item_payment_cannot_start_after_lobby_closes(db_session):
     user = User(
         email="late@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="late@pau.edu.ng",
     )
     lobby = Lobby(title="MAIN", target_item_amount=10000, status=LobbyStatus.triggered)
     db_session.add_all([user, lobby])

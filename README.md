@@ -1,6 +1,6 @@
 # UniCart API
 
-Production backend for [UniCart](https://github.com/epic-ice-fire/unicart_app), a campus group-buying platform built for Pan-Atlantic University students.
+Commercial multi-university backend for [UniCart](https://github.com/epic-ice-fire/unicart_app), supporting Pan-Atlantic University, Augustine University and Babcock University campus marketplaces.
 
 [![Backend CI](https://github.com/epic-ice-fire/unicart-backend/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/epic-ice-fire/unicart-backend/actions/workflows/backend-ci.yml)
 
@@ -10,7 +10,7 @@ Production backend for [UniCart](https://github.com/epic-ice-fire/unicart_app), 
 ## What the API handles
 
 - Account registration, login, logout and revocable remembered sessions
-- PAU student verification through `@pau.edu.ng` and Gmail API delivery
+- Account registration/login followed by campus selection; no school-email OTP, matric number, ID upload or manual student approval is required
 - Shared lobby membership, item submission and batch lifecycle
 - Flutterwave entry-fee and item payment initialization/verification
 - Immutable gateway transaction claims and financial audit events
@@ -49,6 +49,8 @@ app/
 └── security.py
 
 scripts/    migrations, integrity checks, backup/restore and launch audit
+
+docs/MULTI_UNIVERSITY_ROLLOUT.md documents the campus model and migration.
 tests/      authorization, sessions, checkout recovery and financial integrity
 ```
 
@@ -77,8 +79,12 @@ python scripts/security_preflight.py
 
 The production launch audit is intentionally fail-closed and additionally verifies runtime configuration, Gmail API access, PostgreSQL integrity, a real verified Flutterwave payment, financial audit records, and production readiness attestations.
 
+## Multi-campus model
+
+The same backend serves all supported campuses. Each account selects a campus (`pau`, `augustine` or `babcock`), and marketplace operations are scoped to that campus. University selection is not student verification. Campus administrators are restricted to their assigned campus and cannot switch their university scope through the selection endpoint.
+
 ## Security
 
-Production disables the interactive API docs, authenticates payment webhooks, verifies payment amount/currency/reference independently, uses revocable server-side sessions, and keeps financial gateway claims/audit records immutable at the database layer.
+Production disables the interactive API docs, authenticates payment webhooks, verifies payment amount/currency/reference independently, uses revocable server-side sessions, scopes marketplace operations by campus, and keeps financial gateway claims/audit records immutable at the database layer.
 
 See [SECURITY.md](SECURITY.md) for responsible disclosure.

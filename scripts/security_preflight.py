@@ -115,8 +115,6 @@ def _check_runtime_config() -> None:
         FAILURES.append(str(exc))
 
     if settings.ENVIRONMENT != "production":
-        if settings.DEBUG_RETURN_PAU_CODE:
-            WARNINGS.append("DEBUG_RETURN_PAU_CODE is enabled. Keep it false except isolated local debugging.")
         if len(settings.SECRET_KEY) < 32 or "change" in settings.SECRET_KEY.lower():
             WARNINGS.append("Local SECRET_KEY is weak/placeholder. Generate a random one before serious testing.")
         if not settings.FLW_SECRET_HASH:
