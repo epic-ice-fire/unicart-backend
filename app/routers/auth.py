@@ -138,8 +138,6 @@ async def register(
         password_hash=hash_password(payload.password),
         is_admin=False,
         university_code=None,
-        is_student_verified=False,
-        student_pau_email=None,
     )
 
     db.add(user)
@@ -156,8 +154,6 @@ async def register(
         email=user.email,
         is_admin=user.is_admin,
         university_code=user.university_code,
-        is_student_verified=False,
-        student_pau_email=None,
     )
 
 
