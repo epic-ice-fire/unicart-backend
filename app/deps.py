@@ -83,10 +83,6 @@ async def require_university_selected(
     return user
 
 
-# Compatibility alias for older internal imports. This no longer verifies a school email.
-require_verified_student = require_university_selected
-
-
 async def require_admin(
     user: User = Depends(get_current_user),
 ) -> User:
