@@ -65,9 +65,6 @@ class MeResponse(BaseModel):
     email: EmailStr
     is_admin: bool
     university_code: str | None
-    # Deprecated response fields retained briefly for older clients; no verification is required.
-    is_student_verified: bool = False
-    student_pau_email: EmailStr | None = None
 
 
 class UniversitySelectRequest(BaseModel):
