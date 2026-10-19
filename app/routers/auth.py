@@ -155,8 +155,9 @@ async def register(
         id=user.id,
         email=user.email,
         is_admin=user.is_admin,
-        is_student_verified=user.is_student_verified,
-        student_pau_email=user.student_pau_email,
+        university_code=user.university_code,
+        is_student_verified=False,
+        student_pau_email=None,
     )
 
 
