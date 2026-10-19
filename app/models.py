@@ -59,6 +59,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120), default="")
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
+    # Active campus selected by the account holder. This is a marketplace choice, not student verification.
+    university_code: Mapped[str | None] = mapped_column(String(32), nullable=True, default="pau", index=True)
     student_pau_email: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     is_student_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     pau_verification_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -112,6 +114,7 @@ class Lobby(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     host_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(140))
+    university_code: Mapped[str] = mapped_column(String(32), default="pau", index=True)
     target_item_amount: Mapped[int] = mapped_column(Integer, default=30000)
     current_item_amount: Mapped[int] = mapped_column(Integer, default=0)
     member_count: Mapped[int] = mapped_column(Integer, default=0)
