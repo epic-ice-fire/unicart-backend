@@ -6,18 +6,16 @@ os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("FLW_SECRET_KEY", "test-secret")
 os.environ.setdefault("FLW_SECRET_HASH", "test-webhook-hash")
 
-from datetime import timedelta
-
 import pytest
 import pytest_asyncio
-from fastapi import HTTPException
+from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from starlette.requests import Request
 
 from app.db import Base
 from app.models import User
 from app.routers import auth
-from app.schemas import PauLinkRequest, PauVerifyRequest
+from app.schemas import UniversitySelectRequest
 
 
 @pytest_asyncio.fixture
@@ -33,203 +31,63 @@ async def db_session():
     await engine.dispose()
 
 
-@pytest.fixture
-def http_request():
-    return Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/auth/pau/request",
-            "headers": [],
-            "client": ("127.0.0.1", 12345),
-            "server": ("testserver", 80),
-            "scheme": "http",
-            "query_string": b"",
-        }
-    )
-
-
-@pytest.fixture(autouse=True)
-def disable_rate_limits(monkeypatch):
-    async def noop_enforce(*args, **kwargs):
-        return None
-
-    async def noop_reset(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(auth.rate_limiter, "enforce", noop_enforce)
-    monkeypatch.setattr(auth.rate_limiter, "reset", noop_reset)
-
-
 @pytest.mark.asyncio
-async def test_stale_unverified_pau_claim_can_be_reclaimed(
-    db_session,
-    http_request,
-    monkeypatch,
-):
-    stale_owner = User(
-        email="old-account@example.com",
+async def test_new_account_can_choose_a_university_without_school_email(db_session):
+    user = User(
+        email="new-user@example.com",
         password_hash="x",
-        student_pau_email="student@pau.edu.ng",
-        is_student_verified=False,
-        pau_verification_code=None,
-        pau_verification_expires_at=None,
+        university_code=None,
     )
-    current_user = User(
-        email="current-account@example.com",
-        password_hash="x",
-        is_student_verified=False,
-    )
-    db_session.add_all([stale_owner, current_user])
+    db_session.add(user)
     await db_session.commit()
+    await db_session.refresh(user)
 
-    monkeypatch.setattr(auth, "_email_delivery_configured", lambda: True)
-    monkeypatch.setattr(auth, "send_pau_verification_code", lambda **kwargs: True)
+    assert user.university_code is None
 
-    response = await auth.request_pau_code(
-        payload=PauLinkRequest(pau_email="student@pau.edu.ng"),
-        request=http_request,
-        user=current_user,
+    response = await auth.select_university(
+        payload=UniversitySelectRequest(university_code="augustine"),
+        user=user,
         db=db_session,
     )
 
-    await db_session.refresh(stale_owner)
-    await db_session.refresh(current_user)
-
-    assert response.expires_in_seconds > 0
-    assert stale_owner.student_pau_email is None
-    assert stale_owner.pau_verification_code is None
-    assert current_user.student_pau_email == "student@pau.edu.ng"
-    assert current_user.pau_verification_code is not None
+    await db_session.refresh(user)
+    assert response.university_code == "augustine"
+    assert user.university_code == "augustine"
+    assert user.student_pau_email is None
+    assert user.is_student_verified is False
 
 
 @pytest.mark.asyncio
-async def test_verified_pau_owner_cannot_be_reclaimed(
-    db_session,
-    http_request,
-):
-    verified_owner = User(
-        email="verified@example.com",
-        password_hash="x",
-        student_pau_email="verified@pau.edu.ng",
-        is_student_verified=True,
-    )
-    current_user = User(
-        email="other@example.com",
-        password_hash="x",
-        is_student_verified=False,
-    )
-    db_session.add_all([verified_owner, current_user])
-    await db_session.commit()
-
-    with pytest.raises(HTTPException) as exc:
-        await auth.request_pau_code(
-            payload=PauLinkRequest(pau_email="verified@pau.edu.ng"),
-            request=http_request,
-            user=current_user,
-            db=db_session,
-        )
-
-    assert exc.value.status_code == 409
-    await db_session.refresh(verified_owner)
-    assert verified_owner.student_pau_email == "verified@pau.edu.ng"
-    assert verified_owner.is_student_verified is True
-
-
-@pytest.mark.asyncio
-async def test_active_unverified_claim_cannot_be_stolen(
-    db_session,
-    http_request,
-):
-    active_owner = User(
-        email="active@example.com",
-        password_hash="x",
-        student_pau_email="active@pau.edu.ng",
-        is_student_verified=False,
-        pau_verification_code="01234567890123456789",
-        pau_verification_expires_at=auth._utcnow() + timedelta(minutes=5),
-    )
-    current_user = User(
-        email="attacker@example.com",
-        password_hash="x",
-        is_student_verified=False,
-    )
-    db_session.add_all([active_owner, current_user])
-    await db_session.commit()
-
-    with pytest.raises(HTTPException) as exc:
-        await auth.request_pau_code(
-            payload=PauLinkRequest(pau_email="active@pau.edu.ng"),
-            request=http_request,
-            user=current_user,
-            db=db_session,
-        )
-
-    assert exc.value.status_code == 409
-    await db_session.refresh(active_owner)
-    assert active_owner.student_pau_email == "active@pau.edu.ng"
-    assert active_owner.pau_verification_code is not None
-
-
-@pytest.mark.asyncio
-async def test_email_send_failure_releases_unverified_pau_claim(
-    db_session,
-    http_request,
-    monkeypatch,
-):
+async def test_user_can_switch_campus_without_email_verification(db_session):
     user = User(
-        email="failed-send@example.com",
+        email="switching-user@example.com",
         password_hash="x",
-        is_student_verified=False,
+        university_code=None,
     )
     db_session.add(user)
     await db_session.commit()
 
-    monkeypatch.setattr(auth, "_email_delivery_configured", lambda: True)
-    monkeypatch.setattr(auth, "send_pau_verification_code", lambda **kwargs: False)
-    monkeypatch.setattr(auth.settings, "DEBUG_RETURN_PAU_CODE", False)
-
-    with pytest.raises(HTTPException) as exc:
-        await auth.request_pau_code(
-            payload=PauLinkRequest(pau_email="failed@pau.edu.ng"),
-            request=http_request,
+    for campus in ("pau", "babcock", "augustine"):
+        response = await auth.select_university(
+            payload=UniversitySelectRequest(university_code=campus),
             user=user,
             db=db_session,
         )
-
-    assert exc.value.status_code == 503
-    await db_session.refresh(user)
-    assert user.student_pau_email is None
-    assert user.pau_verification_code is None
-    assert user.pau_verification_expires_at is None
+        assert response.university_code == campus
+        await db_session.refresh(user)
+        assert user.university_code == campus
 
 
-@pytest.mark.asyncio
-async def test_expired_code_releases_unverified_pau_email(
-    db_session,
-    http_request,
-):
-    user = User(
-        email="expired@example.com",
-        password_hash="x",
-        student_pau_email="expired@pau.edu.ng",
-        is_student_verified=False,
-        pau_verification_code=auth._hash_pau_code("123456"),
-        pau_verification_expires_at=auth._utcnow() - timedelta(minutes=1),
-    )
-    db_session.add(user)
-    await db_session.commit()
+def test_university_selection_accepts_only_supported_campuses():
+    for campus in ("pau", "augustine", "babcock"):
+        assert UniversitySelectRequest(university_code=campus).university_code == campus
 
-    with pytest.raises(HTTPException) as exc:
-        await auth.verify_pau_code(
-            payload=PauVerifyRequest(code="123456"),
-            request=http_request,
-            user=user,
-            db=db_session,
-        )
+    with pytest.raises(ValidationError):
+        UniversitySelectRequest(university_code="unknown-school")
 
-    assert exc.value.status_code == 400
-    await db_session.refresh(user)
-    assert user.student_pau_email is None
-    assert user.pau_verification_code is None
-    assert user.pau_verification_expires_at is None
+
+def test_pau_email_verification_endpoints_are_removed():
+    paths = {getattr(route, "path", "") for route in auth.router.routes}
+    assert "/auth/pau/request" not in paths
+    assert "/auth/pau/verify" not in paths
+    assert "/auth/university/select" in paths
