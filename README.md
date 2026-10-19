@@ -79,8 +79,12 @@ python scripts/security_preflight.py
 
 The production launch audit is intentionally fail-closed and additionally verifies runtime configuration, Gmail API access, PostgreSQL integrity, a real verified Flutterwave payment, financial audit records, and production readiness attestations.
 
+## Multi-campus model
+
+The same backend serves all supported campuses. Each account selects a campus (`pau`, `augustine` or `babcock`), and marketplace operations are scoped to that campus. University selection is not student verification. Campus administrators are restricted to their assigned campus and cannot switch their university scope through the selection endpoint.
+
 ## Security
 
-Production disables the interactive API docs, authenticates payment webhooks, verifies payment amount/currency/reference independently, uses revocable server-side sessions, and keeps financial gateway claims/audit records immutable at the database layer.
+Production disables the interactive API docs, authenticates payment webhooks, verifies payment amount/currency/reference independently, uses revocable server-side sessions, scopes marketplace operations by campus, and keeps financial gateway claims/audit records immutable at the database layer.
 
 See [SECURITY.md](SECURITY.md) for responsible disclosure.
