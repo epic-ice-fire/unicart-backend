@@ -1,8 +1,4 @@
-from datetime import datetime, timedelta, timezone
-import asyncio
-import hashlib
-import hmac
-import logging
+from datetime import datetime, timezone
 import secrets
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -21,10 +17,7 @@ from app.schemas import (
     ChangePasswordRequest,
     TokenResponse,
     MeResponse,
-    PauLinkRequest,
-    PauVerifyRequest,
-    PauLinkResponse,
-    PauVerifyResponse,
+    UniversitySelectRequest,
 )
 from app.security import (
     access_token_expires_at,
@@ -35,9 +28,7 @@ from app.security import (
     verify_password,
     verify_password_and_update,
 )
-from app.email_service import send_pau_verification_code
 
-logger = logging.getLogger("unicart.auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 # Used only to make nonexistent/passwordless-account login attempts consume
@@ -47,21 +38,6 @@ _DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _generate_pau_code() -> str:
-    # secrets is suitable for security-sensitive one-time codes; random is not.
-    return f"{secrets.randbelow(1_000_000):06d}"
-
-
-def _hash_pau_code(code: str) -> str:
-    # The existing database field is 20 chars, so store an 80-bit keyed digest.
-    # This prevents the OTP itself from being readable from a database dump.
-    return hmac.new(
-        settings.SECRET_KEY.encode("utf-8"),
-        code.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()[:20]
 
 
 def _client_key(request: Request) -> str:
@@ -77,34 +53,6 @@ def _hash_client_metadata(value: str | None) -> str | None:
         value.encode("utf-8", errors="ignore"),
         hashlib.sha256,
     ).hexdigest()
-
-
-def _email_delivery_configured() -> bool:
-    gmail_api_ready = bool(
-        settings.GMAIL_USER
-        and settings.GMAIL_API_CLIENT_ID
-        and settings.GMAIL_API_CLIENT_SECRET
-        and settings.GMAIL_API_REFRESH_TOKEN
-    )
-    smtp_ready = bool(settings.GMAIL_USER and settings.GMAIL_APP_PASSWORD)
-    return gmail_api_ready or smtp_ready
-
-
-def _pau_claim_is_active(user: User, now: datetime) -> bool:
-    return bool(
-        not user.is_student_verified
-        and user.pau_verification_code
-        and user.pau_verification_expires_at
-        and user.pau_verification_expires_at > now
-    )
-
-
-def _clear_unverified_pau_claim(user: User) -> None:
-    if user.is_student_verified:
-        return
-    user.student_pau_email = None
-    user.pau_verification_code = None
-    user.pau_verification_expires_at = None
 
 
 async def _issue_session(
@@ -164,21 +112,6 @@ async def _issue_session(
     return token
 
 
-def _allowed_pau_domains() -> set[str]:
-    return {
-        domain.strip().lower().lstrip("@")
-        for domain in settings.ALLOWED_EMAIL_DOMAINS.split(",")
-        if domain.strip()
-    }
-
-
-def _is_allowed_pau_email(email: str) -> bool:
-    if "@" not in email:
-        return False
-    domain = email.rsplit("@", 1)[1].lower()
-    return domain in _allowed_pau_domains()
-
-
 @router.post("/register", response_model=MeResponse)
 async def register(
     payload: RegisterRequest,
@@ -204,6 +137,7 @@ async def register(
         email=email,
         password_hash=hash_password(payload.password),
         is_admin=False,
+        university_code=None,
         is_student_verified=False,
         student_pau_email=None,
     )
@@ -280,8 +214,30 @@ async def me(user: User = Depends(get_current_user)):
         id=user.id,
         email=user.email,
         is_admin=user.is_admin,
-        is_student_verified=user.is_student_verified,
-        student_pau_email=user.student_pau_email,
+        university_code=user.university_code,
+        is_student_verified=False,
+        student_pau_email=None,
+    )
+
+
+@router.post("/university/select", response_model=MeResponse)
+async def select_university(
+    payload: UniversitySelectRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Campus choice is intentionally lightweight: no school mailbox, matric number,
+    # document upload, or manual approval is required in the commercial edition.
+    user.university_code = payload.university_code
+    await db.commit()
+    await db.refresh(user)
+    return MeResponse(
+        id=user.id,
+        email=user.email,
+        is_admin=user.is_admin,
+        university_code=user.university_code,
+        is_student_verified=False,
+        student_pau_email=None,
     )
 
 
@@ -357,176 +313,3 @@ async def change_password(
     await rate_limiter.reset(f"password-change:user:{user.id}")
 
     return TokenResponse(access_token=new_token, token_type="bearer")
-
-
-@router.post("/pau/request", response_model=PauLinkResponse)
-async def request_pau_code(
-    payload: PauLinkRequest,
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    await rate_limiter.enforce(
-        key=f"pau-request-cooldown:user:{user.id}",
-        limit=1,
-        window_seconds=60,
-        detail="Please wait 60 seconds before requesting another verification code.",
-    )
-    await rate_limiter.enforce(
-        key=f"pau-request:user:{user.id}",
-        limit=5,
-        window_seconds=900,
-        detail="Too many verification-code requests. Please wait before requesting another code.",
-    )
-    await rate_limiter.enforce(
-        key=f"pau-request:ip:{_client_key(request)}",
-        limit=20,
-        window_seconds=3600,
-        detail="Too many verification-code requests from this device/network.",
-    )
-
-    pau_email = payload.pau_email.lower().strip()
-
-    if not _is_allowed_pau_email(pau_email):
-        raise HTTPException(
-            status_code=400,
-            detail="Use a valid approved PAU email address.",
-        )
-
-    now = _utcnow()
-    existing_owner = (
-        await db.execute(
-            select(User).where(
-                User.student_pau_email == pau_email,
-                User.id != user.id,
-            )
-        )
-    ).scalar_one_or_none()
-
-    if existing_owner:
-        if existing_owner.is_student_verified or _pau_claim_is_active(existing_owner, now):
-            raise HTTPException(
-                status_code=409,
-                detail="Unable to link this PAU email.",
-            )
-
-        # A failed/expired verification must not reserve a school email forever.
-        # Release only unverified, inactive claims. Verified identities remain unique.
-        _clear_unverified_pau_claim(existing_owner)
-        try:
-            await db.commit()
-        except IntegrityError:
-            await db.rollback()
-            raise HTTPException(
-                status_code=409,
-                detail="Unable to link this PAU email.",
-            )
-
-    code = _generate_pau_code()
-    expires_minutes = settings.PAU_CODE_EXPIRES_MINUTES
-
-    user.student_pau_email = pau_email
-    user.pau_verification_code = _hash_pau_code(code)
-    user.pau_verification_expires_at = now + timedelta(minutes=expires_minutes)
-    user.is_student_verified = False
-
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="Unable to link this PAU email.",
-        )
-    await db.refresh(user)
-
-    email_sent = False
-    if _email_delivery_configured():
-        try:
-            email_sent = bool(
-                await asyncio.to_thread(
-                    send_pau_verification_code,
-                    pau_email=pau_email,
-                    code=code,
-                    expires_minutes=expires_minutes,
-                )
-            )
-        except Exception:
-            logger.exception("Failed to send PAU verification email for user_id=%s", user.id)
-
-    if not email_sent and not settings.DEBUG_RETURN_PAU_CODE:
-        # Fail closed. Never leak an OTP just because email delivery failed, and
-        # never leave an unverified PAU address stranded on this account.
-        _clear_unverified_pau_claim(user)
-        await db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail="Verification email could not be sent. Please try again shortly.",
-        )
-
-    return PauLinkResponse(
-        message=(
-            f"Verification code sent to {pau_email}. Check your PAU email inbox."
-            if email_sent
-            else "Development verification code generated."
-        ),
-        expires_in_seconds=expires_minutes * 60,
-        dev_code=code if settings.DEBUG_RETURN_PAU_CODE else None,
-    )
-
-
-@router.post("/pau/verify", response_model=PauVerifyResponse)
-async def verify_pau_code(
-    payload: PauVerifyRequest,
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    await rate_limiter.enforce(
-        key=f"pau-verify:user:{user.id}",
-        limit=10,
-        window_seconds=600,
-        detail="Too many incorrect verification attempts. Request a fresh code and try again later.",
-    )
-    await rate_limiter.enforce(
-        key=f"pau-verify:ip:{_client_key(request)}",
-        limit=30,
-        window_seconds=600,
-        detail="Too many verification attempts from this device/network.",
-    )
-
-    if not user.student_pau_email:
-        raise HTTPException(status_code=400, detail="Request a PAU verification code first.")
-
-    if not user.pau_verification_code or not user.pau_verification_expires_at:
-        raise HTTPException(status_code=400, detail="No active PAU verification request found.")
-
-    now = _utcnow()
-    if now > user.pau_verification_expires_at:
-        _clear_unverified_pau_claim(user)
-        await db.commit()
-        raise HTTPException(
-            status_code=400,
-            detail="Verification code has expired. Request a new one.",
-        )
-
-    supplied_code = payload.code.strip()
-    expected_hash = str(user.pau_verification_code)
-    supplied_hash = _hash_pau_code(supplied_code)
-
-    if not hmac.compare_digest(supplied_hash, expected_hash):
-        raise HTTPException(status_code=400, detail="Invalid verification code.")
-
-    user.is_student_verified = True
-    user.pau_verification_code = None
-    user.pau_verification_expires_at = None
-
-    await db.commit()
-    await db.refresh(user)
-    await rate_limiter.reset(f"pau-verify:user:{user.id}")
-
-    return PauVerifyResponse(
-        message="PAU email verified successfully.",
-        student_pau_email=user.student_pau_email,
-        is_student_verified=user.is_student_verified,
-    )
