@@ -22,6 +22,7 @@ from app.models import (
     User,
 )
 from app.routers.lobbies import (
+    admin_force_remove_item,
     get_current_open_main_lobby,
     get_current_open_main_lobby_or_create,
     maybe_open_next_main_lobby,
@@ -172,3 +173,48 @@ async def test_user_cannot_verify_payment_from_another_campus(db_session):
         )
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_remove_item_from_another_campus(db_session):
+    augustine_admin = User(
+        email="augustine-admin@example.com",
+        password_hash="x",
+        is_admin=True,
+        university_code="augustine",
+    )
+    pau_owner = User(
+        email="pau-owner@example.com",
+        password_hash="x",
+        university_code="pau",
+    )
+    pau_lobby = Lobby(
+        title="MAIN",
+        university_code="pau",
+        target_item_amount=50000,
+        status=LobbyStatus.open,
+    )
+    db_session.add_all([augustine_admin, pau_owner, pau_lobby])
+    await db_session.flush()
+
+    pau_item = LobbyItem(
+        lobby_id=pau_lobby.id,
+        user_id=pau_owner.id,
+        item_link="https://example.com/pau-item",
+        item_amount=5000,
+        item_payment_status=ItemPaymentStatus.unpaid,
+    )
+    db_session.add(pau_item)
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await admin_force_remove_item(
+            item_id=pau_item.id,
+            reason="Cross-campus isolation test",
+            admin_user=augustine_admin,
+            db=db_session,
+        )
+
+    assert exc.value.status_code == 404
+    await db_session.refresh(pau_item)
+    assert pau_item.is_active is True
