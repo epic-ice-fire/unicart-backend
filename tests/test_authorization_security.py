@@ -111,6 +111,21 @@ async def test_normal_user_cannot_pass_admin_guard():
 
 
 @pytest.mark.asyncio
+async def test_selected_campus_does_not_require_student_email_verification():
+    user = User(
+        email="campus-user@example.com",
+        password_hash="x",
+        university_code="babcock",
+        is_student_verified=False,
+        student_pau_email=None,
+    )
+
+    selected_user = await require_university_selected(user=user)
+
+    assert selected_user is user
+
+
+@pytest.mark.asyncio
 async def test_user_cannot_verify_another_users_entry_payment(db_session):
     victim = User(email="victim@example.com", password_hash="x")
     attacker = User(email="attacker@example.com", password_hash="x")
@@ -171,14 +186,10 @@ async def test_user_cannot_initialize_payment_for_another_users_item(db_session)
     victim = User(
         email="victim3@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="victim3@pau.edu.ng",
     )
     attacker = User(
         email="attacker3@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="attacker3@pau.edu.ng",
     )
     lobby = Lobby(title="MAIN", target_item_amount=10000, status=LobbyStatus.open)
     db_session.add_all([victim, attacker, lobby])
@@ -209,14 +220,10 @@ async def test_user_cannot_remove_another_users_item(db_session):
     victim = User(
         email="victim4@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="victim4@pau.edu.ng",
     )
     attacker = User(
         email="attacker4@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="attacker4@pau.edu.ng",
     )
     lobby = Lobby(title="MAIN", target_item_amount=10000, status=LobbyStatus.open)
     db_session.add_all([victim, attacker, lobby])
@@ -257,8 +264,6 @@ async def test_new_item_payment_cannot_start_after_lobby_closes(db_session):
     user = User(
         email="late@example.com",
         password_hash="x",
-        is_student_verified=True,
-        student_pau_email="late@pau.edu.ng",
     )
     lobby = Lobby(title="MAIN", target_item_amount=10000, status=LobbyStatus.triggered)
     db_session.add_all([user, lobby])
