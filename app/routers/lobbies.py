@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user, require_verified_student, require_admin
+from app.deps import get_current_user, require_university_selected, require_admin
 from app.notification_recipients import send_to_user_addresses
 from app.models import (
     Lobby, LobbyItem, LobbyPass, LobbyStatus, PassStatus,
@@ -57,9 +57,12 @@ def item_is_locked(item: LobbyItem) -> bool:
     return item.item_payment_status in {ItemPaymentStatus.pending, ItemPaymentStatus.paid}
 
 
-async def create_open_main_lobby(db: AsyncSession) -> Lobby:
+async def create_open_main_lobby(
+    db: AsyncSession, university_code: str = "pau",
+) -> Lobby:
     lobby = Lobby(
         host_id=None, title=MAIN_LOBBY_TITLE,
+        university_code=university_code,
         target_item_amount=settings.TARGET_ITEM_AMOUNT_NGN,
         current_item_amount=0, member_count=0, status=LobbyStatus.open,
     )
@@ -68,21 +71,29 @@ async def create_open_main_lobby(db: AsyncSession) -> Lobby:
     return lobby
 
 
-async def get_current_open_main_lobby(db: AsyncSession) -> Lobby | None:
+async def get_current_open_main_lobby(
+    db: AsyncSession, university_code: str = "pau",
+) -> Lobby | None:
     return (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.status == LobbyStatus.open)
+            .where(
+                Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.university_code == university_code,
+                Lobby.status == LobbyStatus.open,
+            )
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
 
 
-async def get_current_open_main_lobby_or_create(db: AsyncSession) -> Lobby:
-    lobby = await get_current_open_main_lobby(db)
+async def get_current_open_main_lobby_or_create(
+    db: AsyncSession, university_code: str = "pau",
+) -> Lobby:
+    lobby = await get_current_open_main_lobby(db, university_code)
     if lobby:
         return lobby
-    lobby = await create_open_main_lobby(db)
+    lobby = await create_open_main_lobby(db, university_code)
     await record_audit_event(
         db,
         event_type="SYSTEM_MAIN_LOBBY_CREATED",
@@ -158,7 +169,11 @@ async def maybe_open_next_main_lobby(
     existing_open = (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.status == LobbyStatus.open)
+            .where(
+                Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.university_code == just_triggered_lobby.university_code,
+                Lobby.status == LobbyStatus.open,
+            )
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
@@ -168,6 +183,7 @@ async def maybe_open_next_main_lobby(
 
     next_lobby = Lobby(
         host_id=None, title=MAIN_LOBBY_TITLE,
+        university_code=just_triggered_lobby.university_code,
         target_item_amount=just_triggered_lobby.target_item_amount,
         current_item_amount=0, member_count=0, status=LobbyStatus.open,
     )
@@ -367,12 +383,12 @@ async def create_main_lobby(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    existing_open = await get_current_open_main_lobby(db)
+    existing_open = await get_current_open_main_lobby(db, admin_user.university_code or "pau")
     if existing_open:
         return CreateMainLobbyResponse(
             message="Main open lobby already exists", lobby_id=existing_open.id,
         )
-    lobby = await create_open_main_lobby(db)
+    lobby = await create_open_main_lobby(db, admin_user.university_code or "pau")
     await record_audit_event(
         db,
         event_type="ADMIN_MAIN_LOBBY_CREATED",
@@ -387,10 +403,10 @@ async def create_main_lobby(
 
 @router.get("/main", response_model=LobbySnapshotResponse)
 async def main_lobby_snapshot(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
@@ -404,10 +420,10 @@ async def main_lobby_snapshot(
 
 @router.get("/main/details", response_model=MainLobbyDetailsResponse)
 async def main_lobby_details(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
 
     active_pass = (
@@ -526,10 +542,10 @@ async def main_lobby_details(
 
 @router.post("/main/join", response_model=JoinLobbyResponse)
 async def join_main_lobby(
-    user: User = Depends(require_verified_student),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
 
     existing_pass = (
         await db.execute(
@@ -632,7 +648,7 @@ async def add_item_to_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
 
     active_pass = (
         await db.execute(
@@ -673,7 +689,7 @@ async def remove_my_item_from_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
 
     active_pass = (
         await db.execute(
@@ -755,7 +771,14 @@ async def admin_force_remove_item(
         raise HTTPException(400, "A removal reason is required.")
 
     item = (
-        await db.execute(select(LobbyItem).where(LobbyItem.id == item_id))
+        await db.execute(
+            select(LobbyItem)
+            .join(Lobby, Lobby.id == LobbyItem.lobby_id)
+            .where(
+                LobbyItem.id == item_id,
+                Lobby.university_code == (admin_user.university_code or "pau"),
+            )
+        )
     ).scalar_one_or_none()
 
     if not item:
@@ -770,7 +793,12 @@ async def admin_force_remove_item(
     owner_email = item_owner.email if item_owner else None
 
     lobby = (
-        await db.execute(select(Lobby).where(Lobby.id == item.lobby_id))
+        await db.execute(
+            select(Lobby).where(
+                Lobby.id == item.lobby_id,
+                Lobby.university_code == (admin_user.university_code or "pau"),
+            )
+        )
     ).scalar_one_or_none()
 
     was_paid = item.item_payment_status == ItemPaymentStatus.paid
@@ -891,10 +919,10 @@ async def admin_force_remove_item(
 
 @router.get("/main/my-items", response_model=MyLobbyItemsListResponse)
 async def get_my_main_lobby_items(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
 
     items = (
         await db.execute(
@@ -925,13 +953,17 @@ async def get_my_main_lobby_items(
 
 @router.get("/payment-history", response_model=PaymentHistoryListResponse)
 async def get_my_payment_history(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     payments = (
         await db.execute(
             select(PaymentTransaction)
-            .where(PaymentTransaction.user_id == user.id)
+            .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
+            .where(
+                PaymentTransaction.user_id == user.id,
+                Lobby.university_code == (user.university_code or "pau"),
+            )
             .order_by(desc(PaymentTransaction.id))
         )
     ).scalars().all()
@@ -954,7 +986,7 @@ async def get_my_payment_history(
 
 @router.get("/my-history", response_model=UserBatchHistoryListResponse)
 async def get_my_batch_history(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     lobby_ids_from_passes = select(LobbyPass.lobby_id).where(LobbyPass.user_id == user.id)
@@ -965,6 +997,7 @@ async def get_my_batch_history(
             select(Lobby)
             .where(
                 Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.university_code == (user.university_code or "pau"),
                 Lobby.status != LobbyStatus.open,
                 or_(Lobby.id.in_(lobby_ids_from_passes), Lobby.id.in_(lobby_ids_from_items)),
             )
@@ -1011,7 +1044,7 @@ async def admin_dashboard(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    current_open_lobby = await get_current_open_main_lobby_or_create(db)
+    current_open_lobby = await get_current_open_main_lobby_or_create(db, admin_user.university_code or "pau")
     await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(current_open_lobby)
@@ -1021,6 +1054,7 @@ async def admin_dashboard(
             select(Lobby)
             .where(
                 Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.university_code == (admin_user.university_code or "pau"),
                 Lobby.status.in_([
                     LobbyStatus.triggered, LobbyStatus.processing,
                     LobbyStatus.in_transit, LobbyStatus.completed,
@@ -1072,7 +1106,7 @@ async def admin_update_open_lobby_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, admin_user.university_code or "pau")
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
@@ -1125,6 +1159,7 @@ async def admin_update_batch_status(
         await db.execute(
             select(Lobby).where(
                 Lobby.id == lobby_id, Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.university_code == (admin_user.university_code or "pau"),
                 Lobby.status != LobbyStatus.open,
             )
         )
@@ -1201,7 +1236,7 @@ async def leave_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.university_code or "pau")
 
     active_pass = (
         await db.execute(
@@ -1276,7 +1311,7 @@ async def update_main_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, admin_user.university_code or "pau")
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
