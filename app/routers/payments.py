@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user, require_admin, require_verified_student
+from app.deps import get_current_user, require_admin, require_university_selected
 from app.email_service import send_user_payment_receipt
 from app.notification_recipients import send_to_user_addresses
 from app.models import (
@@ -187,11 +187,17 @@ def _render_callback_page(
     return HTMLResponse(content=html, status_code=200)
 
 
-async def _get_open_lobby(db: AsyncSession) -> Lobby | None:
+async def _get_open_lobby(
+    db: AsyncSession, university_code: str = "pau",
+) -> Lobby | None:
     return (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.status == LobbyStatus.open)
+            .where(
+                Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.university_code == university_code,
+                Lobby.status == LobbyStatus.open,
+            )
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
@@ -602,7 +608,7 @@ async def _mark_entry_payment_success(
     membership_lobby = lobby
     transferred_to_next_lobby = False
     if lobby.status != LobbyStatus.open:
-        next_open_lobby = await _get_open_lobby(db)
+        next_open_lobby = await _get_open_lobby(db, lobby.university_code)
         if not next_open_lobby:
             raise HTTPException(
                 503,
@@ -750,10 +756,10 @@ async def _mark_item_payment_success_and_check_trigger(
 
 @router.post("/entry-fee/initialize", response_model=EntryFeeInitializeResponse)
 async def initialize_entry_fee_payment(
-    user: User = Depends(require_verified_student),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await _get_open_lobby(db)
+    lobby = await _get_open_lobby(db, user.university_code or "pau")
     if not lobby:
         raise HTTPException(404, "No open main lobby found.")
 
@@ -865,9 +871,12 @@ async def verify_entry_fee_payment(
     reference = _validate_reference_input(reference)
     payment = (
         await db.execute(
-            select(PaymentTransaction).where(
+            select(PaymentTransaction)
+            .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
+            .where(
                 PaymentTransaction.reference == reference,
                 PaymentTransaction.user_id == user.id,
+                Lobby.university_code == (user.university_code or "pau"),
             )
         )
     ).scalar_one_or_none()
@@ -932,13 +941,17 @@ async def verify_entry_fee_payment(
 @router.post("/items/{item_id}/initialize", response_model=ItemPaymentInitializeResponse)
 async def initialize_item_payment(
     item_id: int,
-    user: User = Depends(require_verified_student),
+    user: User = Depends(require_university_selected),
     db: AsyncSession = Depends(get_db),
 ):
     item = (
         await db.execute(
-            select(LobbyItem).where(
-                LobbyItem.id == item_id, LobbyItem.user_id == user.id,
+            select(LobbyItem)
+            .join(Lobby, Lobby.id == LobbyItem.lobby_id)
+            .where(
+                LobbyItem.id == item_id,
+                LobbyItem.user_id == user.id,
+                Lobby.university_code == (user.university_code or "pau"),
             )
         )
     ).scalar_one_or_none()
@@ -951,7 +964,12 @@ async def initialize_item_payment(
         raise HTTPException(409, "This item is already paid and locked.")
 
     lobby = (
-        await db.execute(select(Lobby).where(Lobby.id == item.lobby_id))
+        await db.execute(
+            select(Lobby).where(
+                Lobby.id == item.lobby_id,
+                Lobby.university_code == (user.university_code or "pau"),
+            )
+        )
     ).scalar_one_or_none()
     if not lobby or lobby.status != LobbyStatus.open:
         raise HTTPException(409, "This lobby is no longer accepting new item payments.")
@@ -1043,9 +1061,12 @@ async def verify_item_payment(
     reference = _validate_reference_input(reference)
     item = (
         await db.execute(
-            select(LobbyItem).where(
+            select(LobbyItem)
+            .join(Lobby, Lobby.id == LobbyItem.lobby_id)
+            .where(
                 LobbyItem.item_payment_reference == reference,
                 LobbyItem.user_id == user.id,
+                Lobby.university_code == (user.university_code or "pau"),
             )
         )
     ).scalar_one_or_none()
@@ -1084,7 +1105,12 @@ async def verify_item_payment(
         )
 
     lobby = (
-        await db.execute(select(Lobby).where(Lobby.id == item.lobby_id))
+        await db.execute(
+            select(Lobby).where(
+                Lobby.id == item.lobby_id,
+                Lobby.university_code == (user.university_code or "pau"),
+            )
+        )
     ).scalar_one_or_none()
     triggered_before = lobby and lobby.status == LobbyStatus.triggered
 
@@ -1403,7 +1429,12 @@ async def reconcile_payment(
     reference = _validate_reference_input(reference)
     payment = (
         await db.execute(
-            select(PaymentTransaction).where(PaymentTransaction.reference == reference)
+            select(PaymentTransaction)
+            .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
+            .where(
+                PaymentTransaction.reference == reference,
+                Lobby.university_code == (admin_user.university_code or "pau"),
+            )
         )
     ).scalar_one_or_none()
 
@@ -1411,7 +1442,12 @@ async def reconcile_payment(
     if not payment:
         item = (
             await db.execute(
-                select(LobbyItem).where(LobbyItem.item_payment_reference == reference)
+                select(LobbyItem)
+                .join(Lobby, Lobby.id == LobbyItem.lobby_id)
+                .where(
+                    LobbyItem.item_payment_reference == reference,
+                    Lobby.university_code == (admin_user.university_code or "pau"),
+                )
             )
         ).scalar_one_or_none()
 
@@ -1516,7 +1552,15 @@ async def list_financial_audit_events(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(FinancialAuditEvent).order_by(FinancialAuditEvent.id.desc()).limit(limit)
+    campus_lobby_ids = select(Lobby.id).where(
+        Lobby.university_code == (admin_user.university_code or "pau")
+    )
+    query = (
+        select(FinancialAuditEvent)
+        .where(FinancialAuditEvent.lobby_id.in_(campus_lobby_ids))
+        .order_by(FinancialAuditEvent.id.desc())
+        .limit(limit)
+    )
     if reference:
         reference = _validate_reference_input(reference)
         query = query.where(FinancialAuditEvent.payment_reference == reference)
