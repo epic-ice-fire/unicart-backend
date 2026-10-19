@@ -225,6 +225,14 @@ async def select_university(
 ):
     # Campus choice is intentionally lightweight: no school mailbox, matric number,
     # document upload, or manual approval is required in the commercial edition.
+    # Admin privileges are campus-scoped by the account's assigned university. Do not
+    # let an administrator change this field to gain privileges in another campus.
+    if user.is_admin and user.university_code != payload.university_code:
+        raise HTTPException(
+            status_code=403,
+            detail="Campus administrators cannot switch their assigned campus.",
+        )
+
     user.university_code = payload.university_code
     await db.commit()
     await db.refresh(user)
