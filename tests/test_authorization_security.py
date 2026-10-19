@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db import Base
-from app.deps import get_current_user, require_admin
+from app.deps import get_current_user, require_admin, require_university_selected
 from app.models import (
     ItemPaymentStatus,
     Lobby,
@@ -77,9 +77,9 @@ def test_dev_admin_route_is_not_exposed():
     assert "/auth/dev/make-admin" not in paths
 
 
-def test_main_snapshot_requires_authentication():
+def test_main_snapshot_requires_authentication_and_campus_selection():
     dependencies = route_dependency_calls(lobbies.router, "/lobbies/main", "GET")
-    assert get_current_user in dependencies
+    assert require_university_selected in dependencies
 
 
 def test_every_admin_lobby_route_requires_admin_dependency():
