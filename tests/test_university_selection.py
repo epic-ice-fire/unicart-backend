@@ -90,3 +90,26 @@ def test_pau_email_verification_endpoints_are_removed():
     assert "/auth/pau/request" not in paths
     assert "/auth/pau/verify" not in paths
     assert "/auth/university/select" in paths
+
+
+@pytest.mark.asyncio
+async def test_campus_admin_cannot_switch_to_another_campus(db_session):
+    admin = User(
+        email="augustine-admin@example.com",
+        password_hash="x",
+        is_admin=True,
+        university_code="augustine",
+    )
+    db_session.add(admin)
+    await db_session.commit()
+
+    with pytest.raises(Exception) as exc:
+        await auth.select_university(
+            payload=UniversitySelectRequest(university_code="pau"),
+            user=admin,
+            db=db_session,
+        )
+
+    assert getattr(exc.value, "status_code", None) == 403
+    await db_session.refresh(admin)
+    assert admin.university_code == "augustine"
