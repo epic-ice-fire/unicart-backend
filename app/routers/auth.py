@@ -401,15 +401,10 @@ async def request_pau_code(
         detail="Too many verification-code requests from this device/network.",
     )
 
-    # Verify control of the account email, not a university-issued inbox.
-    # Any email domain is allowed at registration; the OTP must go to the
-    # exact email address used to create this UniCart account.
+    # Verify control of the email address the student chooses. It may be
+    # their account email or another inbox they can access; no university
+    # email domain is required.
     pau_email = payload.pau_email.lower().strip()
-    if pau_email != user.email.lower().strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Verify the same email address you used to create your UniCart account.",
-        )
 
     now = _utcnow()
     existing_owner = (
