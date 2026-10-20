@@ -189,6 +189,8 @@ class MainLobbyDetailsResponse(BaseModel):
     latest_payment_status: str | None
     latest_payment_reference: str | None
     has_successful_payment_for_current_lobby: bool
+    has_shared_access: bool = False
+    shared_access_source_lobby_id: int | None = None
 
 
 class CreateMainLobbyResponse(BaseModel):
