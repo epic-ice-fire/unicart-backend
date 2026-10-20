@@ -294,6 +294,7 @@ async def me(user: User = Depends(get_current_user)):
         is_admin=user.is_admin,
         is_student_verified=user.is_student_verified,
         student_pau_email=user.student_pau_email,
+        school_id=user.school_id,
     )
 
 
