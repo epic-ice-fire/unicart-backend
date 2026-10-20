@@ -172,11 +172,21 @@ def _allowed_pau_domains() -> set[str]:
     }
 
 
-def _is_allowed_pau_email(email: str) -> bool:
+SCHOOL_EMAIL_DOMAINS = {
+    "pau": {"pau.edu.ng"},
+    "augustine": {"augustineuniversity.edu.ng"},
+    "babcock": {"babcock.edu.ng"},
+}
+
+
+def _is_allowed_pau_email(email: str, school_id: str = "pau") -> bool:
     if "@" not in email:
         return False
     domain = email.rsplit("@", 1)[1].lower()
-    return domain in _allowed_pau_domains()
+    allowed = SCHOOL_EMAIL_DOMAINS.get(school_id, set())
+    if school_id == "pau":
+        allowed = allowed | _allowed_pau_domains()
+    return domain in allowed
 
 
 @router.post("/register", response_model=MeResponse)
@@ -202,6 +212,7 @@ async def register(
 
     user = User(
         email=email,
+        school_id=payload.school_id,
         password_hash=hash_password(payload.password),
         is_admin=False,
         is_student_verified=False,
@@ -223,6 +234,7 @@ async def register(
         is_admin=user.is_admin,
         is_student_verified=user.is_student_verified,
         student_pau_email=user.student_pau_email,
+        school_id=user.school_id,
     )
 
 
@@ -387,10 +399,10 @@ async def request_pau_code(
 
     pau_email = payload.pau_email.lower().strip()
 
-    if not _is_allowed_pau_email(pau_email):
+    if not _is_allowed_pau_email(pau_email, user.school_id):
         raise HTTPException(
             status_code=400,
-            detail="Use a valid approved PAU email address.",
+            detail=f"Use your approved {user.school_id.title()} student email address.",
         )
 
     now = _utcnow()
@@ -407,7 +419,7 @@ async def request_pau_code(
         if existing_owner.is_student_verified or _pau_claim_is_active(existing_owner, now):
             raise HTTPException(
                 status_code=409,
-                detail="Unable to link this PAU email.",
+                detail="Unable to link this student email.",
             )
 
         # A failed/expired verification must not reserve a school email forever.
@@ -466,7 +478,7 @@ async def request_pau_code(
 
     return PauLinkResponse(
         message=(
-            f"Verification code sent to {pau_email}. Check your PAU email inbox."
+            f"Verification code sent to {pau_email}. Check your student email inbox."
             if email_sent
             else "Development verification code generated."
         ),
@@ -496,7 +508,7 @@ async def verify_pau_code(
     )
 
     if not user.student_pau_email:
-        raise HTTPException(status_code=400, detail="Request a PAU verification code first.")
+        raise HTTPException(status_code=400, detail="Request a student verification code first.")
 
     if not user.pau_verification_code or not user.pau_verification_expires_at:
         raise HTTPException(status_code=400, detail="No active PAU verification request found.")
@@ -526,7 +538,7 @@ async def verify_pau_code(
     await rate_limiter.reset(f"pau-verify:user:{user.id}")
 
     return PauVerifyResponse(
-        message="PAU email verified successfully.",
+        message="Student email verified successfully.",
         student_pau_email=user.student_pau_email,
         is_student_verified=user.is_student_verified,
     )
