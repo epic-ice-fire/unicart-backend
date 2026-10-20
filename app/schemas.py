@@ -337,6 +337,7 @@ class AdminBatchItemResponse(BaseModel):
     item_payment_reference: str | None
     item_label: str
     user_email: EmailStr
+    user_phone_number: str | None = None
     created_at: str
     removed_at: str | None
 
