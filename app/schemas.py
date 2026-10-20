@@ -32,7 +32,21 @@ def _validate_new_password(value: str) -> str:
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+    phone_number: str | None = Field(default=None, min_length=7, max_length=32)
     school_id: str = Field(default="pau", pattern=r"^(pau|augustine|babcock)$")
+
+    @field_validator("phone_number")
+    @classmethod
+    def validate_phone_number(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        phone = value.strip()
+        if not phone or not all(ch.isdigit() or ch in "+ ()-." for ch in phone):
+            raise ValueError("Enter a valid phone number.")
+        digits = sum(ch.isdigit() for ch in phone)
+        if digits < 7 or digits > 15:
+            raise ValueError("Phone number must contain 7 to 15 digits.")
+        return phone
 
     @field_validator("password")
     @classmethod
@@ -67,6 +81,7 @@ class MeResponse(BaseModel):
     is_student_verified: bool
     student_pau_email: EmailStr | None
     school_id: str = "pau"
+    phone_number: str | None = None
 
 
 class PauLinkRequest(BaseModel):
