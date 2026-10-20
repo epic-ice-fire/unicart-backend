@@ -364,15 +364,16 @@ def _build_admin_batch(
 
 @router.post("/create_main", response_model=CreateMainLobbyResponse)
 async def create_main_lobby(
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    existing_open = await get_current_open_main_lobby(db, admin_user.school_id)
+    existing_open = await get_current_open_main_lobby(db, school_id)
     if existing_open:
         return CreateMainLobbyResponse(
             message="Main open lobby already exists", lobby_id=existing_open.id,
         )
-    lobby = await create_open_main_lobby(db, admin_user.school_id)
+    lobby = await create_open_main_lobby(db, school_id)
     await record_audit_event(
         db,
         event_type="ADMIN_MAIN_LOBBY_CREATED",
@@ -1008,10 +1009,11 @@ async def get_my_batch_history(
 
 @router.get("/admin/dashboard", response_model=AdminDashboardResponse)
 async def admin_dashboard(
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    current_open_lobby = await get_current_open_main_lobby_or_create(db, admin_user.school_id)
+    current_open_lobby = await get_current_open_main_lobby_or_create(db, school_id)
     await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(current_open_lobby)
@@ -1021,7 +1023,7 @@ async def admin_dashboard(
             select(Lobby)
             .where(
                 Lobby.title == MAIN_LOBBY_TITLE,
-                Lobby.school_id == admin_user.school_id,
+                Lobby.school_id == school_id,
                 Lobby.status.in_([
                     LobbyStatus.triggered, LobbyStatus.processing,
                     LobbyStatus.in_transit, LobbyStatus.completed,
@@ -1070,10 +1072,11 @@ async def admin_dashboard(
 @router.patch("/admin/open-lobby/target", response_model=LobbySnapshotResponse)
 async def admin_update_open_lobby_target(
     payload: UpdateTargetRequest,
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, admin_user.school_id)
+    lobby = await get_current_open_main_lobby_or_create(db, school_id)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
@@ -1274,10 +1277,11 @@ async def leave_main_lobby(
 @router.patch("/main/target", response_model=LobbySnapshotResponse)
 async def update_main_target(
     payload: UpdateTargetRequest,
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, admin_user.school_id)
+    lobby = await get_current_open_main_lobby_or_create(db, school_id)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
