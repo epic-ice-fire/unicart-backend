@@ -82,22 +82,25 @@ async def lifespan(app: FastAPI):
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            # Safe additive migration for existing production databases. Existing users
-            # and lobbies remain in the original PAU tenant by default.
-            if conn.dialect.name == "postgresql":
-                await conn.exec_driver_sql(
-                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS school_id VARCHAR(40) NOT NULL DEFAULT 'pau'"
-                )
-                await conn.exec_driver_sql(
-                    "ALTER TABLE lobbies ADD COLUMN IF NOT EXISTS school_id VARCHAR(40) NOT NULL DEFAULT 'pau'"
-                )
-                await conn.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_users_school_id ON users (school_id)"
-                )
-                await conn.exec_driver_sql(
-                    "CREATE INDEX IF NOT EXISTS ix_lobbies_school_id ON lobbies (school_id)"
-                )
         logger.info("Database tables checked/created successfully.")
+
+    # Always run additive tenant migrations. Production intentionally disables
+    # AUTO_CREATE_TABLES, so these schema upgrades must not depend on that flag.
+    async with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS school_id VARCHAR(40) NOT NULL DEFAULT 'pau'"
+            )
+            await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS lobbies ADD COLUMN IF NOT EXISTS school_id VARCHAR(40) NOT NULL DEFAULT 'pau'"
+            )
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_users_school_id ON users (school_id)"
+            )
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_lobbies_school_id ON lobbies (school_id)"
+            )
+            logger.info("Multi-school database migration checked/applied.")
 
     yield
     await engine.dispose()
