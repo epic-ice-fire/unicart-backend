@@ -32,6 +32,7 @@ def _validate_new_password(value: str) -> str:
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+    school_id: str = Field(default="pau", pattern=r"^(pau|augustine|babcock)$")
 
     @field_validator("password")
     @classmethod
@@ -65,6 +66,7 @@ class MeResponse(BaseModel):
     is_admin: bool
     is_student_verified: bool
     student_pau_email: EmailStr | None
+    school_id: str = "pau"
 
 
 class PauLinkRequest(BaseModel):
