@@ -212,6 +212,7 @@ async def register(
 
     user = User(
         email=email,
+        phone_number=payload.phone_number,
         school_id=payload.school_id,
         password_hash=hash_password(payload.password),
         is_admin=False,
@@ -235,6 +236,7 @@ async def register(
         is_student_verified=user.is_student_verified,
         student_pau_email=user.student_pau_email,
         school_id=user.school_id,
+        phone_number=user.phone_number,
     )
 
 
@@ -295,6 +297,7 @@ async def me(user: User = Depends(get_current_user)):
         is_student_verified=user.is_student_verified,
         student_pau_email=user.student_pau_email,
         school_id=user.school_id,
+        phone_number=user.phone_number,
     )
 
 
@@ -398,12 +401,14 @@ async def request_pau_code(
         detail="Too many verification-code requests from this device/network.",
     )
 
+    # Verify control of the account email, not a university-issued inbox.
+    # Any email domain is allowed at registration; the OTP must go to the
+    # exact email address used to create this UniCart account.
     pau_email = payload.pau_email.lower().strip()
-
-    if not _is_allowed_pau_email(pau_email, user.school_id):
+    if pau_email != user.email.lower().strip():
         raise HTTPException(
             status_code=400,
-            detail=f"Use your approved {user.school_id.title()} student email address.",
+            detail="Verify the same email address you used to create your UniCart account.",
         )
 
     now = _utcnow()
@@ -432,7 +437,7 @@ async def request_pau_code(
             await db.rollback()
             raise HTTPException(
                 status_code=409,
-                detail="Unable to link this PAU email.",
+                detail="Unable to start email verification for this account.",
             )
 
     code = _generate_pau_code()
@@ -479,7 +484,7 @@ async def request_pau_code(
 
     return PauLinkResponse(
         message=(
-            f"Verification code sent to {pau_email}. Check your student email inbox."
+            f"Verification code sent to {pau_email}. Check your inbox."
             if email_sent
             else "Development verification code generated."
         ),
@@ -512,7 +517,7 @@ async def verify_pau_code(
         raise HTTPException(status_code=400, detail="Request a student verification code first.")
 
     if not user.pau_verification_code or not user.pau_verification_expires_at:
-        raise HTTPException(status_code=400, detail="No active PAU verification request found.")
+        raise HTTPException(status_code=400, detail="No active email verification request found.")
 
     now = _utcnow()
     if now > user.pau_verification_expires_at:
@@ -539,7 +544,7 @@ async def verify_pau_code(
     await rate_limiter.reset(f"pau-verify:user:{user.id}")
 
     return PauVerifyResponse(
-        message="Student email verified successfully.",
+        message="Email address verified successfully.",
         student_pau_email=user.student_pau_email,
         is_student_verified=user.is_student_verified,
     )
