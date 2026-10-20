@@ -352,10 +352,11 @@ def _build_admin_batch(
                 item_payment_reference=item.item_payment_reference,
                 item_label=build_item_label(item),
                 user_email=email,
+                user_phone_number=phone_number,
                 created_at=item.created_at.isoformat(),
                 removed_at=item.removed_at.isoformat() if item.removed_at else None,
             )
-            for item, email in rows
+            for item, email, phone_number in rows
         ],
     )
 
@@ -1037,7 +1038,7 @@ async def admin_dashboard(
     for lobby in triggered_lobbies:
         rows = (
             await db.execute(
-                select(LobbyItem, User.email)
+                select(LobbyItem, User.email, User.phone_number)
                 .join(User, User.id == LobbyItem.user_id)
                 .where(LobbyItem.lobby_id == lobby.id)
                 .order_by(LobbyItem.id.desc())
@@ -1180,7 +1181,7 @@ async def admin_update_batch_status(
 
     rows = (
         await db.execute(
-            select(LobbyItem, User.email)
+            select(LobbyItem, User.email, User.phone_number)
             .join(User, User.id == LobbyItem.user_id)
             .where(LobbyItem.lobby_id == lobby.id)
             .order_by(LobbyItem.id.desc())
