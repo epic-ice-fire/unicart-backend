@@ -186,7 +186,7 @@ def _is_allowed_pau_email(email: str, school_id: str = "pau") -> bool:
     allowed = SCHOOL_EMAIL_DOMAINS.get(school_id, set())
     if school_id == "pau":
         allowed = allowed | _allowed_pau_domains()
-    return domain in allowed
+    return any(domain == item or domain.endswith(f".{item}") for item in allowed)
 
 
 @router.post("/register", response_model=MeResponse)
