@@ -1070,6 +1070,7 @@ async def get_my_batch_history(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    retailer = _normalize_retailer(retailer)
     lobby_ids_from_passes = select(LobbyPass.lobby_id).where(LobbyPass.user_id == user.id)
     lobby_ids_from_items = select(LobbyItem.lobby_id).where(LobbyItem.user_id == user.id)
 
