@@ -12,9 +12,12 @@ To get a Gmail App Password:
        ADMIN_EMAIL=unicartbytekena@gmail.com
 """
 
+import base64
 import logging
 import smtplib
 import ssl
+
+import httpx
 from html import escape
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -23,20 +26,96 @@ logger = logging.getLogger("unicart.email")
 FROM_NAME = "UniCart"
 
 
-def _get_credentials():
+def _get_settings():
     """Import lazily so settings are fully loaded before we read them."""
     from app.config import settings
-    return settings.GMAIL_USER, settings.GMAIL_APP_PASSWORD
+    return settings
+
+
+def _send_via_gmail_api(gmail_user: str, subject: str, to_email: str, html_body: str) -> bool:
+    """Send through Gmail API using the configured OAuth refresh token."""
+    settings = _get_settings()
+    if not all((
+        gmail_user,
+        settings.GMAIL_API_CLIENT_ID,
+        settings.GMAIL_API_CLIENT_SECRET,
+        settings.GMAIL_API_REFRESH_TOKEN,
+    )):
+        return False
+
+    try:
+        token_response = httpx.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": settings.GMAIL_API_CLIENT_ID,
+                "client_secret": settings.GMAIL_API_CLIENT_SECRET,
+                "refresh_token": settings.GMAIL_API_REFRESH_TOKEN,
+                "grant_type": "refresh_token",
+            },
+            timeout=8.0,
+        )
+        if token_response.status_code != 200:
+            logger.error(
+                "[UniCart Email] Gmail OAuth token refresh failed (HTTP %s): %s",
+                token_response.status_code,
+                token_response.text[:300],
+            )
+            return False
+
+        access_token = token_response.json().get("access_token")
+        if not access_token:
+            logger.error("[UniCart Email] Gmail OAuth response did not include an access token.")
+            return False
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{FROM_NAME} <{gmail_user}>"
+        msg["To"] = to_email
+        msg.attach(MIMEText(html_body, "html"))
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+        send_response = httpx.post(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"raw": raw_message},
+            timeout=8.0,
+        )
+        if send_response.status_code not in (200, 202):
+            logger.error(
+                "[UniCart Email] Gmail API send failed (HTTP %s): %s",
+                send_response.status_code,
+                send_response.text[:300],
+            )
+            return False
+
+        logger.info("[UniCart Email] Gmail API sent message to %s | %s", to_email, subject)
+        return True
+    except Exception:
+        logger.exception("[UniCart Email] Gmail API delivery failed for %s", to_email)
+        return False
 
 
 def _send(to_email: str, subject: str, html_body: str) -> bool:
-    """Send a single email. Returns True on success, False on failure."""
-    gmail_user, gmail_password = _get_credentials()
+    """Send through Gmail API OAuth first, with App Password SMTP as fallback."""
+    settings = _get_settings()
+    gmail_user = settings.GMAIL_USER
+    gmail_password = settings.GMAIL_APP_PASSWORD
+    api_configured = all((
+        gmail_user,
+        settings.GMAIL_API_CLIENT_ID,
+        settings.GMAIL_API_CLIENT_SECRET,
+        settings.GMAIL_API_REFRESH_TOKEN,
+    ))
 
+    if api_configured and _send_via_gmail_api(gmail_user, subject, to_email, html_body):
+        return True
+
+    # If API OAuth is configured but fails and no SMTP fallback exists, report
+    # failure so the auth endpoint returns its safe 503 response.
     if not gmail_user or not gmail_password:
-        logger.warning(
-            f"[UniCart Email] NOT CONFIGURED — skipping email to {to_email}. "
-            "Add GMAIL_USER and GMAIL_APP_PASSWORD to your .env file."
+        logger.error(
+            "[UniCart Email] No working delivery method. Configure Gmail API OAuth "
+            "or GMAIL_USER plus GMAIL_APP_PASSWORD in the host environment."
         )
         return False
 
@@ -47,10 +126,7 @@ def _send(to_email: str, subject: str, html_body: str) -> bool:
         msg["To"] = to_email
         msg.attach(MIMEText(html_body, "html"))
 
-        # Render could not reach Gmail's implicit TLS endpoint on port 465.
-        # Use Gmail's STARTTLS endpoint instead and bound the network wait so a
-        # failed mail connection can never leave the verification UI spinning
-        # for minutes.
+        # Use STARTTLS on port 587 and bound the network wait.
         with smtplib.SMTP("smtp.gmail.com", 587, timeout=8) as server:
             server.ehlo()
             server.starttls(context=ssl.create_default_context())
@@ -58,18 +134,16 @@ def _send(to_email: str, subject: str, html_body: str) -> bool:
             server.login(gmail_user, gmail_password)
             server.sendmail(gmail_user, to_email, msg.as_string())
 
-        logger.info(f"[UniCart Email] ✅ Sent → {to_email} | {subject}")
+        logger.info("[UniCart Email] SMTP sent message to %s | %s", to_email, subject)
         return True
-
     except smtplib.SMTPAuthenticationError:
         logger.error(
-            f"[UniCart Email] ❌ Authentication failed for {gmail_user}. "
-            "Make sure you are using a Gmail App Password (not your normal Gmail password). "
-            "Go to myaccount.google.com/apppasswords to generate one."
+            "[UniCart Email] SMTP authentication failed for %s. Use a Gmail App Password, "
+            "not the normal account password.", gmail_user
         )
         return False
-    except Exception as e:
-        logger.error(f"[UniCart Email] ❌ Failed to send to {to_email}: {e}")
+    except Exception:
+        logger.exception("[UniCart Email] SMTP delivery failed for %s", to_email)
         return False
 
 
