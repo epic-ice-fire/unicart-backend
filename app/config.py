@@ -98,6 +98,10 @@ class Settings:
                 "http://127.0.0.1:3000,http://127.0.0.1:8000",
             )
         )
+        # Always allow the configured frontend origin, even when an older
+        # Render BACKEND_CORS_ORIGINS value omits it.
+        if self.PUBLIC_APP_URL and self.PUBLIC_APP_URL not in self.BACKEND_CORS_ORIGINS:
+            self.BACKEND_CORS_ORIGINS.append(self.PUBLIC_APP_URL)
         self.ALLOWED_HOSTS: list[str] = self._parse_hosts(
             os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver")
         )
