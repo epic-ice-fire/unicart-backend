@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import logging
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, desc, or_
@@ -57,9 +58,9 @@ def item_is_locked(item: LobbyItem) -> bool:
     return item.item_payment_status in {ItemPaymentStatus.pending, ItemPaymentStatus.paid}
 
 
-async def create_open_main_lobby(db: AsyncSession, school_id: str = "pau") -> Lobby:
+async def create_open_main_lobby(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby:
     lobby = Lobby(
-        host_id=None, title=MAIN_LOBBY_TITLE, school_id=school_id,
+        host_id=None, title=MAIN_LOBBY_TITLE, school_id=school_id, retailer=retailer,
         target_item_amount=settings.TARGET_ITEM_AMOUNT_NGN,
         current_item_amount=0, member_count=0, status=LobbyStatus.open,
     )
@@ -68,33 +69,75 @@ async def create_open_main_lobby(db: AsyncSession, school_id: str = "pau") -> Lo
     return lobby
 
 
-async def get_current_open_main_lobby(db: AsyncSession, school_id: str = "pau") -> Lobby | None:
+async def get_current_open_main_lobby(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby | None:
     return (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id, Lobby.status == LobbyStatus.open)
+            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id, Lobby.retailer == retailer, Lobby.status == LobbyStatus.open)
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
 
 
-async def get_current_open_main_lobby_or_create(db: AsyncSession, school_id: str = "pau") -> Lobby:
-    lobby = await get_current_open_main_lobby(db, school_id)
+async def get_current_open_main_lobby_or_create(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby:
+    lobby = await get_current_open_main_lobby(db, school_id, retailer)
     if lobby:
         return lobby
-    lobby = await create_open_main_lobby(db, school_id)
+    lobby = await create_open_main_lobby(db, school_id, retailer)
     await record_audit_event(
         db,
         event_type="SYSTEM_MAIN_LOBBY_CREATED",
         lobby_id=lobby.id,
         details={
             "target_item_amount": lobby.target_item_amount,
+            "retailer": retailer,
             "source": "auto_create",
         },
     )
     await db.commit()
     await db.refresh(lobby)
     return lobby
+
+
+
+
+async def get_shared_access_source(db: AsyncSession, *, user_id: int, school_id: str, retailer: str):
+    """Find a paid, still-open lobby that grants cross-retailer access."""
+    return (await db.execute(
+        select(Lobby, PaymentTransaction)
+        .join(PaymentTransaction, PaymentTransaction.lobby_id == Lobby.id)
+        .where(
+            Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id,
+            Lobby.retailer != retailer, Lobby.status == LobbyStatus.open,
+            PaymentTransaction.user_id == user_id,
+            PaymentTransaction.status == PaymentStatus.success,
+        )
+        .order_by(desc(PaymentTransaction.paid_at), desc(PaymentTransaction.id))
+    )).first()
+
+
+async def ensure_shared_channel_pass(db: AsyncSession, *, lobby: Lobby, user: User, source) -> None:
+    existing = (await db.execute(select(LobbyPass).where(
+        LobbyPass.lobby_id == lobby.id, LobbyPass.user_id == user.id,
+        LobbyPass.status == PassStatus.active,
+    ))).scalar_one_or_none()
+    if existing:
+        if existing.shared_access_source_lobby_id is not None and existing.shared_access_source_lobby_id != source[0].id:
+            existing.shared_access_source_lobby_id = source[0].id
+        return
+    db.add(LobbyPass(
+        lobby_id=lobby.id, user_id=user.id, entry_fee_amount=settings.ENTRY_FEE_NGN,
+        status=PassStatus.active, paid_at=source[1].paid_at or _utcnow(),
+        shared_access_source_lobby_id=source[0].id,
+    ))
+    await db.flush()
+    await record_audit_event(
+        db, event_type="SHARED_RETAILER_ACCESS_GRANTED", subject_user_id=user.id,
+        lobby_id=lobby.id, payment_reference=source[1].reference,
+        amount_ngn=source[1].amount_ngn,
+        details={"source_lobby_id": source[0].id, "source_retailer": source[0].retailer,
+                 "target_retailer": lobby.retailer},
+    )
 
 
 async def recalculate_lobby_totals(
@@ -158,7 +201,7 @@ async def maybe_open_next_main_lobby(
     existing_open = (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == just_triggered_lobby.school_id, Lobby.status == LobbyStatus.open)
+            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == just_triggered_lobby.school_id, Lobby.retailer == just_triggered_lobby.retailer, Lobby.status == LobbyStatus.open)
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
@@ -168,6 +211,7 @@ async def maybe_open_next_main_lobby(
 
     next_lobby = Lobby(
         host_id=None, title=MAIN_LOBBY_TITLE, school_id=just_triggered_lobby.school_id,
+        retailer=just_triggered_lobby.retailer,
         target_item_amount=just_triggered_lobby.target_item_amount,
         current_item_amount=0, member_count=0, status=LobbyStatus.open,
     )
@@ -366,15 +410,16 @@ def _build_admin_batch(
 @router.post("/create_main", response_model=CreateMainLobbyResponse)
 async def create_main_lobby(
     school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    existing_open = await get_current_open_main_lobby(db, school_id)
+    existing_open = await get_current_open_main_lobby(db, school_id, retailer)
     if existing_open:
         return CreateMainLobbyResponse(
             message="Main open lobby already exists", lobby_id=existing_open.id,
         )
-    lobby = await create_open_main_lobby(db, school_id)
+    lobby = await create_open_main_lobby(db, school_id, retailer)
     await record_audit_event(
         db,
         event_type="ADMIN_MAIN_LOBBY_CREATED",
@@ -389,10 +434,11 @@ async def create_main_lobby(
 
 @router.get("/main", response_model=LobbySnapshotResponse)
 async def main_lobby_snapshot(
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
@@ -406,6 +452,7 @@ async def main_lobby_snapshot(
 
 @router.get("/main/details", response_model=MainLobbyDetailsResponse)
 async def main_lobby_details(
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -420,6 +467,13 @@ async def main_lobby_details(
             )
         )
     ).scalar_one_or_none()
+    shared_access_source = await get_shared_access_source(
+        db, user_id=user.id, school_id=user.school_id, retailer=retailer,
+    )
+    if active_pass and active_pass.shared_access_source_lobby_id is not None and not shared_access_source:
+        active_pass.status = PassStatus.left
+        active_pass.left_at = _utcnow()
+        active_pass = None
 
     latest_left_pass = (
         await db.execute(
@@ -511,7 +565,7 @@ async def main_lobby_details(
         current_item_amount=lobby.current_item_amount,
         target_item_amount=lobby.target_item_amount,
         member_count=lobby.member_count,
-        has_joined=active_pass is not None,
+        has_joined=(active_pass is not None and (active_pass.shared_access_source_lobby_id is None or shared_access_source is not None)) or shared_access_source is not None,
         my_active_item_count=my_items_count,
         my_total_item_amount=my_paid_total,
         entry_fee_amount=settings.ENTRY_FEE_NGN,
@@ -522,12 +576,15 @@ async def main_lobby_details(
         ),
         latest_payment_status=latest_payment.status.value if latest_payment else None,
         latest_payment_reference=latest_payment.reference if latest_payment else None,
-        has_successful_payment_for_current_lobby=successful_payment is not None,
+        has_successful_payment_for_current_lobby=successful_payment is not None or shared_access_source is not None,
+        has_shared_access=shared_access_source is not None,
+        shared_access_source_lobby_id=shared_access_source[0].id if shared_access_source else None,
     )
 
 
 @router.post("/main/join", response_model=JoinLobbyResponse)
 async def join_main_lobby(
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
@@ -542,6 +599,15 @@ async def join_main_lobby(
         )
     ).scalar_one_or_none()
 
+    if existing_pass and existing_pass.shared_access_source_lobby_id is not None:
+        current_shared_source = await get_shared_access_source(
+            db, user_id=user.id, school_id=user.school_id, retailer=retailer,
+        )
+        if not current_shared_source:
+            existing_pass.status = PassStatus.left
+            existing_pass.left_at = _utcnow()
+            await db.flush()
+            existing_pass = None
     if existing_pass:
         raise HTTPException(409, "You already joined the main lobby.")
 
@@ -576,8 +642,20 @@ async def join_main_lobby(
         )
     ).scalars().first()
 
-    if not successful_payment:
+    shared_access_source = await get_shared_access_source(
+        db, user_id=user.id, school_id=user.school_id, retailer=retailer,
+    )
+    if not successful_payment and not shared_access_source:
         raise HTTPException(402, "Pay the entry fee first before joining.")
+    if shared_access_source:
+        await ensure_shared_channel_pass(db, lobby=lobby, user=user, source=shared_access_source)
+        await recalculate_lobby_totals(db, lobby, allow_trigger=False)
+        await db.commit()
+        await db.refresh(lobby)
+        return JoinLobbyResponse(
+            message="Shared Temu and SHEIN access activated.", lobby_id=lobby.id,
+            entry_fee_amount=0, member_count=lobby.member_count,
+        )
 
     new_pass = LobbyPass(
         lobby_id=lobby.id, user_id=user.id,
@@ -631,6 +709,7 @@ async def join_main_lobby(
 @router.post("/main/items", response_model=AddItemResponse)
 async def add_item_to_main_lobby(
     payload: AddItemRequest,
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
@@ -645,8 +724,24 @@ async def add_item_to_main_lobby(
         )
     ).scalar_one_or_none()
 
-    if not active_pass:
-        raise HTTPException(403, "Pay and join the main lobby first before adding items.")
+    local_success = (await db.execute(select(PaymentTransaction.id).where(
+        PaymentTransaction.lobby_id == lobby.id, PaymentTransaction.user_id == user.id,
+        PaymentTransaction.status == PaymentStatus.success,
+    ).limit(1))).first()
+    shared_access_source = await get_shared_access_source(
+        db, user_id=user.id, school_id=user.school_id, retailer=retailer,
+    )
+    if not ((active_pass and local_success) or shared_access_source):
+        raise HTTPException(403, "Shared access has expired. Pay to join a qualifying open lobby first.")
+    if shared_access_source and not local_success:
+        await ensure_shared_channel_pass(db, lobby=lobby, user=user, source=shared_access_source)
+    hostname = (urlsplit(payload.item_link).hostname or "").lower().rstrip(".")
+    allowed_hosts = ("temu.com",) if retailer == "temu" else (
+        "shein.com", "shein.co.uk", "shein.in", "shein.eu", "shein.com.mx",
+        "shein.com.br", "shein.com.ar", "shein.sa", "shein.ae",
+    )
+    if not any(hostname == host or hostname.endswith("." + host) for host in allowed_hosts):
+        raise HTTPException(422, f"Submit a valid {retailer.upper()} product link in the {retailer.upper()} channel.")
 
     item = LobbyItem(
         lobby_id=lobby.id, user_id=user.id,
@@ -672,6 +767,7 @@ async def add_item_to_main_lobby(
 @router.post("/main/items/{item_id}/remove", response_model=RemoveItemResponse)
 async def remove_my_item_from_main_lobby(
     item_id: int,
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
@@ -893,6 +989,7 @@ async def admin_force_remove_item(
 
 @router.get("/main/my-items", response_model=MyLobbyItemsListResponse)
 async def get_my_main_lobby_items(
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -956,6 +1053,7 @@ async def get_my_payment_history(
 
 @router.get("/my-history", response_model=UserBatchHistoryListResponse)
 async def get_my_batch_history(
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -967,6 +1065,7 @@ async def get_my_batch_history(
             select(Lobby)
             .where(
                 Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.retailer == retailer,
                 Lobby.status != LobbyStatus.open,
                 or_(Lobby.id.in_(lobby_ids_from_passes), Lobby.id.in_(lobby_ids_from_items)),
             )
@@ -1011,10 +1110,11 @@ async def get_my_batch_history(
 @router.get("/admin/dashboard", response_model=AdminDashboardResponse)
 async def admin_dashboard(
     school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    current_open_lobby = await get_current_open_main_lobby_or_create(db, school_id)
+    current_open_lobby = await get_current_open_main_lobby_or_create(db, school_id, retailer)
     await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(current_open_lobby)
@@ -1025,6 +1125,7 @@ async def admin_dashboard(
             .where(
                 Lobby.title == MAIN_LOBBY_TITLE,
                 Lobby.school_id == school_id,
+                Lobby.retailer == retailer,
                 Lobby.status.in_([
                     LobbyStatus.triggered, LobbyStatus.processing,
                     LobbyStatus.in_transit, LobbyStatus.completed,
@@ -1074,6 +1175,7 @@ async def admin_dashboard(
 async def admin_update_open_lobby_target(
     payload: UpdateTargetRequest,
     school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1203,6 +1305,7 @@ async def admin_update_batch_status(
 
 @router.post("/main/leave", response_model=LeaveLobbyResponse)
 async def leave_main_lobby(
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1279,6 +1382,7 @@ async def leave_main_lobby(
 async def update_main_target(
     payload: UpdateTargetRequest,
     school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
