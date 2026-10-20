@@ -115,6 +115,7 @@ class Lobby(Base):
     host_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(140))
     school_id: Mapped[str] = mapped_column(String(40), default="pau", server_default="pau", index=True)
+    retailer: Mapped[str] = mapped_column(String(16), default="temu", server_default="temu", index=True)
     target_item_amount: Mapped[int] = mapped_column(Integer, default=30000)
     current_item_amount: Mapped[int] = mapped_column(Integer, default=0)
     member_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -147,6 +148,7 @@ class LobbyPass(Base):
     entry_fee_amount: Mapped[int] = mapped_column(Integer, default=2000)
     status: Mapped[PassStatus] = mapped_column(Enum(PassStatus), default=PassStatus.active)
     paid_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    shared_access_source_lobby_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     left_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     lobby = relationship("Lobby", back_populates="passes")
 
