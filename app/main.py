@@ -98,10 +98,22 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE IF EXISTS lobbies ADD COLUMN IF NOT EXISTS school_id VARCHAR(40) NOT NULL DEFAULT 'pau'"
             )
             await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS lobbies ADD COLUMN IF NOT EXISTS retailer VARCHAR(16) NOT NULL DEFAULT 'temu'"
+            )
+            await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS lobby_passes ADD COLUMN IF NOT EXISTS shared_access_source_lobby_id INTEGER"
+            )
+            await conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_users_school_id ON users (school_id)"
             )
             await conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_lobbies_school_id ON lobbies (school_id)"
+            )
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_lobbies_retailer ON lobbies (retailer)"
+            )
+            await conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_lobby_passes_shared_access_source_lobby_id ON lobby_passes (shared_access_source_lobby_id)"
             )
             logger.info("Multi-school database migration checked/applied.")
 
