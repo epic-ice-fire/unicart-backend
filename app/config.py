@@ -100,8 +100,13 @@ class Settings:
         )
         # Always allow the configured frontend origin, even when an older
         # Render BACKEND_CORS_ORIGINS value omits it.
-        if self.PUBLIC_APP_URL and self.PUBLIC_APP_URL not in self.BACKEND_CORS_ORIGINS:
-            self.BACKEND_CORS_ORIGINS.append(self.PUBLIC_APP_URL)
+        required_frontend_origins = {
+            self.PUBLIC_APP_URL,
+            "https://unicartbytekena.onrender.com",
+        }
+        for origin in required_frontend_origins:
+            if origin and origin not in self.BACKEND_CORS_ORIGINS:
+                self.BACKEND_CORS_ORIGINS.append(origin)
         self.ALLOWED_HOSTS: list[str] = self._parse_hosts(
             os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver")
         )
