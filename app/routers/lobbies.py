@@ -44,6 +44,14 @@ ADMIN_EMAIL = settings.ADMIN_EMAIL
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
+
+def _normalize_retailer(value) -> str:
+    # FastAPI's Query default is an object when route functions are called directly in tests.
+    if isinstance(value, str):
+        return value if value in {"temu", "shein"} else "temu"
+    default = getattr(value, "default", "temu")
+    return default if default in {"temu", "shein"} else "temu"
+
 def build_item_label(item: LobbyItem) -> str:
     if not item.is_active:
         return "REMOVED"
@@ -59,6 +67,7 @@ def item_is_locked(item: LobbyItem) -> bool:
 
 
 async def create_open_main_lobby(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby:
+    retailer = _normalize_retailer(retailer)
     lobby = Lobby(
         host_id=None, title=MAIN_LOBBY_TITLE, school_id=school_id, retailer=retailer,
         target_item_amount=settings.TARGET_ITEM_AMOUNT_NGN,
@@ -70,6 +79,7 @@ async def create_open_main_lobby(db: AsyncSession, school_id: str = "pau", retai
 
 
 async def get_current_open_main_lobby(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby | None:
+    retailer = _normalize_retailer(retailer)
     return (
         await db.execute(
             select(Lobby)
@@ -103,6 +113,7 @@ async def get_current_open_main_lobby_or_create(db: AsyncSession, school_id: str
 
 async def get_shared_access_source(db: AsyncSession, *, user_id: int, school_id: str, retailer: str):
     """Find a paid, still-open lobby that grants cross-retailer access."""
+    retailer = _normalize_retailer(retailer)
     return (await db.execute(
         select(Lobby, PaymentTransaction)
         .join(PaymentTransaction, PaymentTransaction.lobby_id == Lobby.id)
@@ -414,6 +425,7 @@ async def create_main_lobby(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    retailer = _normalize_retailer(retailer)
     existing_open = await get_current_open_main_lobby(db, school_id, retailer)
     if existing_open:
         return CreateMainLobbyResponse(
@@ -713,6 +725,7 @@ async def add_item_to_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
+    retailer = _normalize_retailer(retailer)
     lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
 
     active_pass = (
@@ -1114,6 +1127,7 @@ async def admin_dashboard(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    retailer = _normalize_retailer(retailer)
     current_open_lobby = await get_current_open_main_lobby_or_create(db, school_id, retailer)
     await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)
     await db.commit()
@@ -1179,6 +1193,7 @@ async def admin_update_open_lobby_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    retailer = _normalize_retailer(retailer)
     lobby = await get_current_open_main_lobby_or_create(db, school_id)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
@@ -1386,6 +1401,7 @@ async def update_main_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    retailer = _normalize_retailer(retailer)
     lobby = await get_current_open_main_lobby_or_create(db, school_id)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
