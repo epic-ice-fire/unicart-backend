@@ -114,7 +114,7 @@ def _base_template(content: str) -> str:
         {content}
         <div class="footer">
           UniCart — Campus Group Buying Platform<br>
-          Pan-Atlantic University · This is an automated notification.
+          This is an automated UniCart notification.
         </div>
       </div>
     </body>
@@ -129,15 +129,15 @@ def send_pau_verification_code(
     code: str,
     expires_minutes: int,
 ) -> bool:
-    subject = "Your UniCart student verification code"
+    subject = "Your UniCart email verification code"
     content = f"""
     <div class="header">
-      <h1>Verify your PAU email</h1>
-      <p>Enter this code in the UniCart app to complete verification.</p>
+      <h1>Verify your email address</h1>
+      <p>Enter this code in the UniCart app to verify your UniCart account.</p>
     </div>
 
     <h2>Your verification code</h2>
-    <p>Use the code below to verify your Pan-Atlantic University email address.
+    <p>Use the code below to verify the email address linked to your UniCart account.
     This code expires in <strong>{expires_minutes} minutes</strong>.</p>
 
     <div class="code-box">
