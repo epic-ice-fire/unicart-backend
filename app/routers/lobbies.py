@@ -894,7 +894,7 @@ async def get_my_main_lobby_items(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
 
     items = (
         await db.execute(
