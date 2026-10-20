@@ -407,7 +407,7 @@ async def main_lobby_details(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
 
     active_pass = (
@@ -529,7 +529,7 @@ async def join_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
 
     existing_pass = (
         await db.execute(
@@ -632,7 +632,7 @@ async def add_item_to_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
 
     active_pass = (
         await db.execute(
@@ -673,7 +673,7 @@ async def remove_my_item_from_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
 
     active_pass = (
         await db.execute(
@@ -1011,7 +1011,7 @@ async def admin_dashboard(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    current_open_lobby = await get_current_open_main_lobby_or_create(db)
+    current_open_lobby = await get_current_open_main_lobby_or_create(db, admin_user.school_id)
     await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(current_open_lobby)
@@ -1073,7 +1073,7 @@ async def admin_update_open_lobby_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, admin_user.school_id)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
@@ -1202,7 +1202,7 @@ async def leave_main_lobby(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
 
     active_pass = (
         await db.execute(
@@ -1277,7 +1277,7 @@ async def update_main_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, admin_user.school_id)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
