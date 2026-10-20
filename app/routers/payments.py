@@ -188,6 +188,10 @@ def _render_callback_page(
 
 
 async def _get_open_lobby(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby | None:
+    if not isinstance(retailer, str):
+        retailer = getattr(retailer, "default", "temu")
+    if retailer not in {"temu", "shein"}:
+        retailer = "temu"
     return (
         await db.execute(
             select(Lobby)
