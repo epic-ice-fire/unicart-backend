@@ -187,11 +187,11 @@ def _render_callback_page(
     return HTMLResponse(content=html, status_code=200)
 
 
-async def _get_open_lobby(db: AsyncSession, school_id: str = "pau") -> Lobby | None:
+async def _get_open_lobby(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby | None:
     return (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id, Lobby.status == LobbyStatus.open)
+            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id, Lobby.retailer == retailer, Lobby.status == LobbyStatus.open)
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
@@ -750,10 +750,11 @@ async def _mark_item_payment_success_and_check_trigger(
 
 @router.post("/entry-fee/initialize", response_model=EntryFeeInitializeResponse)
 async def initialize_entry_fee_payment(
+    retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await _get_open_lobby(db, user.school_id)
+    lobby = await _get_open_lobby(db, user.school_id, retailer)
     if not lobby:
         raise HTTPException(404, "No open main lobby found.")
 
