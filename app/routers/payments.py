@@ -187,11 +187,11 @@ def _render_callback_page(
     return HTMLResponse(content=html, status_code=200)
 
 
-async def _get_open_lobby(db: AsyncSession) -> Lobby | None:
+async def _get_open_lobby(db: AsyncSession, school_id: str = "pau") -> Lobby | None:
     return (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.status == LobbyStatus.open)
+            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id, Lobby.status == LobbyStatus.open)
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
@@ -602,7 +602,7 @@ async def _mark_entry_payment_success(
     membership_lobby = lobby
     transferred_to_next_lobby = False
     if lobby.status != LobbyStatus.open:
-        next_open_lobby = await _get_open_lobby(db)
+        next_open_lobby = await _get_open_lobby(db, lobby.school_id)
         if not next_open_lobby:
             raise HTTPException(
                 503,
@@ -753,7 +753,7 @@ async def initialize_entry_fee_payment(
     user: User = Depends(require_verified_student),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await _get_open_lobby(db)
+    lobby = await _get_open_lobby(db, user.school_id)
     if not lobby:
         raise HTTPException(404, "No open main lobby found.")
 
