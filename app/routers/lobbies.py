@@ -57,9 +57,9 @@ def item_is_locked(item: LobbyItem) -> bool:
     return item.item_payment_status in {ItemPaymentStatus.pending, ItemPaymentStatus.paid}
 
 
-async def create_open_main_lobby(db: AsyncSession) -> Lobby:
+async def create_open_main_lobby(db: AsyncSession, school_id: str = "pau") -> Lobby:
     lobby = Lobby(
-        host_id=None, title=MAIN_LOBBY_TITLE,
+        host_id=None, title=MAIN_LOBBY_TITLE, school_id=school_id,
         target_item_amount=settings.TARGET_ITEM_AMOUNT_NGN,
         current_item_amount=0, member_count=0, status=LobbyStatus.open,
     )
@@ -68,21 +68,21 @@ async def create_open_main_lobby(db: AsyncSession) -> Lobby:
     return lobby
 
 
-async def get_current_open_main_lobby(db: AsyncSession) -> Lobby | None:
+async def get_current_open_main_lobby(db: AsyncSession, school_id: str = "pau") -> Lobby | None:
     return (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.status == LobbyStatus.open)
+            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id, Lobby.status == LobbyStatus.open)
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
 
 
-async def get_current_open_main_lobby_or_create(db: AsyncSession) -> Lobby:
-    lobby = await get_current_open_main_lobby(db)
+async def get_current_open_main_lobby_or_create(db: AsyncSession, school_id: str = "pau") -> Lobby:
+    lobby = await get_current_open_main_lobby(db, school_id)
     if lobby:
         return lobby
-    lobby = await create_open_main_lobby(db)
+    lobby = await create_open_main_lobby(db, school_id)
     await record_audit_event(
         db,
         event_type="SYSTEM_MAIN_LOBBY_CREATED",
@@ -158,7 +158,7 @@ async def maybe_open_next_main_lobby(
     existing_open = (
         await db.execute(
             select(Lobby)
-            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.status == LobbyStatus.open)
+            .where(Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == just_triggered_lobby.school_id, Lobby.status == LobbyStatus.open)
             .order_by(desc(Lobby.id))
         )
     ).scalars().first()
@@ -167,7 +167,7 @@ async def maybe_open_next_main_lobby(
         return existing_open
 
     next_lobby = Lobby(
-        host_id=None, title=MAIN_LOBBY_TITLE,
+        host_id=None, title=MAIN_LOBBY_TITLE, school_id=just_triggered_lobby.school_id,
         target_item_amount=just_triggered_lobby.target_item_amount,
         current_item_amount=0, member_count=0, status=LobbyStatus.open,
     )
@@ -367,12 +367,12 @@ async def create_main_lobby(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    existing_open = await get_current_open_main_lobby(db)
+    existing_open = await get_current_open_main_lobby(db, admin_user.school_id)
     if existing_open:
         return CreateMainLobbyResponse(
             message="Main open lobby already exists", lobby_id=existing_open.id,
         )
-    lobby = await create_open_main_lobby(db)
+    lobby = await create_open_main_lobby(db, admin_user.school_id)
     await record_audit_event(
         db,
         event_type="ADMIN_MAIN_LOBBY_CREATED",
@@ -390,7 +390,7 @@ async def main_lobby_snapshot(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
@@ -1021,6 +1021,7 @@ async def admin_dashboard(
             select(Lobby)
             .where(
                 Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.school_id == admin_user.school_id,
                 Lobby.status.in_([
                     LobbyStatus.triggered, LobbyStatus.processing,
                     LobbyStatus.in_transit, LobbyStatus.completed,
