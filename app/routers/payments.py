@@ -158,6 +158,12 @@ def _render_callback_page(
     else:
         accent, bg, border = "#dc2626", "#fef2f2", "#fca5a5"
 
+    app_url = escape(settings.PUBLIC_APP_URL, quote=True)
+    auto_return = (
+        f'<script>window.setTimeout(function(){{window.location.replace("{app_url}");}}, 1800);</script>'
+        if status == "success"
+        else ""
+    )
     html = f"""
     <!DOCTYPE html><html lang="en"><head>
     <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
@@ -181,8 +187,8 @@ def _render_callback_page(
       <p><strong>Reference:</strong> {escape(_mask_reference(reference) or "N/A")}</p>
       <p><strong>Next step:</strong> Return to the UniCart app to continue.</p>
     </div>
-    <button onclick="window.close()">Close tab</button>
-    </div></body></html>
+    <button onclick="window.location.href='{app_url}'">Return to UniCart</button>
+    </div>{auto_return}</body></html>
     """
     return HTMLResponse(content=html, status_code=200)
 
