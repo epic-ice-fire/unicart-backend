@@ -7,6 +7,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_session, get_current_user
-from app.models import AuthSession, User
+from app.models import AuthSession, CampusSelection, User
 from app.rate_limit import rate_limiter
 from app.schemas import (
     RegisterRequest,
@@ -543,3 +544,29 @@ async def verify_pau_code(
         student_pau_email=user.student_pau_email,
         is_student_verified=user.is_student_verified,
     )
+
+
+class CampusSelectionRequest(BaseModel):
+    selected_school_id: str = Field(pattern=r"^(pau|augustine|babcock)$")
+
+
+@router.post("/campus-selection", status_code=201)
+async def record_campus_selection(
+    payload: CampusSelectionRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record the campus a signed-in user self-reports at login.
+
+    This is survey data, not proof of university affiliation and does not change
+    the user's registered school or restrict future campus switching.
+    """
+    db.add(
+        CampusSelection(
+            user_id=user.id,
+            account_school_id=user.school_id,
+            selected_school_id=payload.selected_school_id,
+        )
+    )
+    await db.commit()
+    return {"recorded": True}
