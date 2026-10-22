@@ -1147,15 +1147,9 @@ async def flutterwave_callback(
             status="error",
         )
 
-    # The browser-supplied status is only UX information. It never grants access.
-    if status != "successful":
-        return _render_callback_page(
-            title="Payment not completed",
-            message="Your payment was not completed. Return to UniCart and try again.",
-            status="pending",
-            reference=tx_ref,
-        )
-
+    # Flutterwave's browser redirect query is not authoritative and can be
+    # absent or stale. Always verify the stored reference directly with the
+    # provider before deciding whether to show success or pending.
     payment = (
         await db.execute(
             select(PaymentTransaction).where(PaymentTransaction.reference == tx_ref)
@@ -1180,6 +1174,13 @@ async def flutterwave_callback(
 
     try:
         flw_data = await _flw_verify_by_ref(tx_ref)
+        if str(flw_data.get("status") or "").lower() != "successful":
+            return _render_callback_page(
+                title="Payment still processing",
+                message="Flutterwave has not confirmed this payment yet. You can return to UniCart; it will refresh your payment status.",
+                status="pending",
+                reference=tx_ref,
+            )
         if payment:
             _validate_flw_transaction(
                 flw_data,
