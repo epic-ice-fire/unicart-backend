@@ -722,7 +722,7 @@ async def join_main_lobby(
 async def add_item_to_main_lobby(
     payload: AddItemRequest,
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
-    user: User = Depends(require_verified_student),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     retailer = _normalize_retailer(retailer)
