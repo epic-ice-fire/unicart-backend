@@ -259,3 +259,17 @@ class FinancialAuditEvent(Base):
     amount_ngn: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+
+
+class CampusSelection(Base):
+    """Self-reported campus selection made at login, for aggregate campus research."""
+
+    __tablename__ = "campus_selections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    account_school_id: Mapped[str] = mapped_column(String(40), index=True)
+    selected_school_id: Mapped[str] = mapped_column(String(40), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
+
+    user = relationship("User")
