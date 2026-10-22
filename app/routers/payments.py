@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user, require_admin, require_verified_student
+from app.deps import get_current_user, require_admin
 from app.email_service import send_user_payment_receipt
 from app.notification_recipients import send_to_user_addresses
 from app.models import (
@@ -761,7 +761,7 @@ async def _mark_item_payment_success_and_check_trigger(
 @router.post("/entry-fee/initialize", response_model=EntryFeeInitializeResponse)
 async def initialize_entry_fee_payment(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
-    user: User = Depends(require_verified_student),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await _get_open_lobby(db, user.school_id, retailer)
