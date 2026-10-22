@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user, require_verified_student, require_admin
+from app.deps import get_current_user, require_admin
 from app.notification_recipients import send_to_user_addresses
 from app.models import (
     Lobby, LobbyItem, LobbyPass, LobbyStatus, PassStatus,
@@ -597,7 +597,7 @@ async def main_lobby_details(
 @router.post("/main/join", response_model=JoinLobbyResponse)
 async def join_main_lobby(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
-    user: User = Depends(require_verified_student),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
