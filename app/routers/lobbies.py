@@ -781,7 +781,7 @@ async def add_item_to_main_lobby(
 async def remove_my_item_from_main_lobby(
     item_id: int,
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
-    user: User = Depends(require_verified_student),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
@@ -1322,7 +1322,7 @@ async def admin_update_batch_status(
 @router.post("/main/leave", response_model=LeaveLobbyResponse)
 async def leave_main_lobby(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
-    user: User = Depends(require_verified_student),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
