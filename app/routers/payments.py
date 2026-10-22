@@ -943,7 +943,7 @@ async def verify_entry_fee_payment(
 @router.post("/items/{item_id}/initialize", response_model=ItemPaymentInitializeResponse)
 async def initialize_item_payment(
     item_id: int,
-    user: User = Depends(require_verified_student),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     item = (
