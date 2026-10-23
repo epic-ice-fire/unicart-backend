@@ -133,6 +133,11 @@ async def lifespan(app: FastAPI):
             await conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_lobby_passes_shared_access_source_lobby_id ON lobby_passes (shared_access_source_lobby_id)"
             )
+            # Retire legacy cross-retailer passes. Retailer access is no longer shared.
+            await conn.exec_driver_sql(
+                "UPDATE lobby_passes SET status = 'left', left_at = CURRENT_TIMESTAMP "
+                "WHERE shared_access_source_lobby_id IS NOT NULL AND status = 'active'"
+            )
             await conn.exec_driver_sql(
                 "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password_reset_code_hash VARCHAR(64)"
             )
