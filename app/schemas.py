@@ -78,6 +78,8 @@ class MeResponse(BaseModel):
     id: int
     email: EmailStr
     is_admin: bool
+    admin_role: str | None = None
+    admin_school_id: str | None = None
     is_student_verified: bool
     student_pau_email: EmailStr | None
     school_id: str = "pau"
