@@ -7,7 +7,7 @@ import secrets
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,7 +37,7 @@ from app.security import (
     verify_password,
     verify_password_and_update,
 )
-from app.email_service import send_pau_verification_code
+from app.email_service import send_pau_verification_code, send_password_reset_code
 
 logger = logging.getLogger("unicart.auth")
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -191,6 +191,21 @@ def _is_allowed_pau_email(email: str, school_id: str = "pau") -> bool:
     return any(domain == item or domain.endswith(f".{item}") for item in allowed)
 
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\\d{6}$")
+    new_password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return _validate_new_password(value)
+
+
 class AdminBootstrapRequest(BaseModel):
     bootstrap_secret: str = Field(min_length=32, max_length=256)
 
@@ -209,6 +224,76 @@ class AcceptAdminInviteRequest(BaseModel):
     email: EmailStr
     token: str = Field(min_length=32, max_length=128)
     password: str = Field(min_length=12, max_length=128)
+
+@router.post("/password-reset/request")
+async def request_password_reset(
+    payload: PasswordResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Request a reset code without revealing whether the account exists."""
+    email = str(payload.email).strip().lower()
+    await rate_limiter.enforce(
+        key=f"password-reset-request:{_client_key(request)}:{email}",
+        limit=5,
+        window_seconds=3600,
+        detail="Too many password reset requests. Try again later.",
+    )
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if user is not None and user.password_hash:
+        code = _generate_pau_code()
+        user.password_reset_code_hash = _hash_pau_code(code)
+        user.password_reset_expires_at = _utcnow() + timedelta(minutes=15)
+        user.password_reset_attempts = 0
+        await db.commit()
+        if not send_password_reset_code(email, code, 15):
+            logger.error("Password reset email delivery failed for an eligible account.")
+    return {"message": "If that email has an account, we've sent a 6-digit code."}
+
+
+@router.post("/password-reset/confirm")
+async def confirm_password_reset(
+    payload: PasswordResetConfirmRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    email = str(payload.email).strip().lower()
+    await rate_limiter.enforce(
+        key=f"password-reset-confirm:{_client_key(request)}:{email}",
+        limit=8,
+        window_seconds=3600,
+        detail="Too many password reset attempts. Request a new code later.",
+    )
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    now = _utcnow()
+    if (
+        user is None
+        or not user.password_hash
+        or not user.password_reset_code_hash
+        or not user.password_reset_expires_at
+        or user.password_reset_expires_at <= now
+        or user.password_reset_attempts >= 8
+        or not hmac.compare_digest(user.password_reset_code_hash, _hash_pau_code(payload.code))
+    ):
+        if user is not None and user.password_reset_code_hash and user.password_reset_attempts < 8:
+            user.password_reset_attempts += 1
+            await db.commit()
+        raise HTTPException(400, "Invalid or expired reset code. Request a new code and try again.")
+
+    if verify_password(payload.new_password, user.password_hash):
+        raise HTTPException(422, "Choose a password different from your current password.")
+    user.password_hash = hash_password(payload.new_password)
+    user.password_reset_code_hash = None
+    user.password_reset_expires_at = None
+    user.password_reset_attempts = 0
+    await db.execute(
+        update(AuthSession)
+        .where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    await db.commit()
+    return {"message": "Password reset successful. Sign in with your new password."}
+
 
 @router.post("/admin/bootstrap")
 async def bootstrap_super_admin(
