@@ -197,8 +197,16 @@ class PasswordResetRequest(BaseModel):
 
 class PasswordResetConfirmRequest(BaseModel):
     email: EmailStr
-    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    code: str = Field(min_length=6, max_length=6)
     new_password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) != 6 or not normalized.isascii() or not normalized.isdigit():
+            raise ValueError("Enter the 6-digit code from your email.")
+        return normalized
 
     @field_validator("new_password")
     @classmethod
