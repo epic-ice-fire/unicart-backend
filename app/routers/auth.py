@@ -200,6 +200,11 @@ class AdminInviteRequest(BaseModel):
     school_id: str = Field(pattern=r"^(pau|augustine|babcock)$")
 
 
+class PromoteExistingAdminRequest(BaseModel):
+    email: EmailStr
+    school_id: str = Field(pattern=r"^(pau|augustine|babcock)$")
+
+
 class AcceptAdminInviteRequest(BaseModel):
     email: EmailStr
     token: str = Field(min_length=32, max_length=128)
@@ -261,6 +266,39 @@ async def create_school_admin_invite(
 
 
 @router.post("/admin/accept-invite", status_code=201)
+@router.post("/admin/promote-existing")
+async def promote_existing_school_admin(
+    payload: PromoteExistingAdminRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Promote an existing marketplace account without creating a duplicate."""
+    if admin_role_for(admin) != "super_admin":
+        raise HTTPException(403, "Only the superior admin can promote school admins.")
+
+    email = str(payload.email).strip().lower()
+    existing = (
+        await db.execute(select(User).where(User.email == email))
+    ).scalar_one_or_none()
+    if existing is None:
+        raise HTTPException(404, "No UniCart account exists for that email. Use an invitation for a new admin.")
+    if admin_role_for(existing) == "super_admin":
+        raise HTTPException(409, "The superior admin account cannot be changed into a school admin.")
+    if admin_role_for(existing) == "school_admin":
+        raise HTTPException(409, "This account is already a school admin. Revoke its current role before reassigning it.")
+
+    existing.is_admin = True
+    existing.admin_role = "school_admin"
+    existing.admin_school_id = payload.school_id
+    await db.commit()
+    return {
+        "message": "Existing account promoted to school admin.",
+        "email": existing.email,
+        "admin_role": "school_admin",
+        "admin_school_id": payload.school_id,
+    }
+
+
 async def accept_school_admin_invite(
     payload: AcceptAdminInviteRequest,
     request: Request,
