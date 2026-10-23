@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_session, get_current_user
+from app.deps import admin_role_for, get_current_session, get_current_user
 from app.models import AuthSession, CampusSelection, User
 from app.rate_limit import rate_limiter
 from app.schemas import (
@@ -234,6 +234,8 @@ async def register(
         id=user.id,
         email=user.email,
         is_admin=user.is_admin,
+        admin_role=admin_role_for(user),
+        admin_school_id=user.admin_school_id,
         is_student_verified=user.is_student_verified,
         student_pau_email=user.student_pau_email,
         school_id=user.school_id,
@@ -295,6 +297,8 @@ async def me(user: User = Depends(get_current_user)):
         id=user.id,
         email=user.email,
         is_admin=user.is_admin,
+        admin_role=admin_role_for(user),
+        admin_school_id=user.admin_school_id,
         is_student_verified=user.is_student_verified,
         student_pau_email=user.student_pau_email,
         school_id=user.school_id,
