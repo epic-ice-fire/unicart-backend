@@ -89,6 +89,24 @@ async def get_current_open_main_lobby(db: AsyncSession, school_id: str = "pau", 
     ).scalars().first()
 
 
+async def get_chronological_batch_numbers(
+    db: AsyncSession, school_id: str, retailer: str,
+) -> dict[int, int]:
+    """Return stable 1-based batch numbers for one school's retailer channel."""
+    lobbies = (
+        await db.execute(
+            select(Lobby.id)
+            .where(
+                Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.school_id == school_id,
+                Lobby.retailer == retailer,
+            )
+            .order_by(Lobby.created_at.asc(), Lobby.id.asc())
+        )
+    ).scalars().all()
+    return {lobby_id: index for index, lobby_id in enumerate(lobbies, start=1)}
+
+
 async def get_current_open_main_lobby_or_create(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby:
     lobby = await get_current_open_main_lobby(db, school_id, retailer)
     if lobby:
@@ -1067,6 +1085,7 @@ async def get_my_batch_history(
         )
     ).scalars().all()
 
+    batch_numbers = await get_chronological_batch_numbers(db, user.school_id, retailer)
     batches = []
     for lobby in lobbies:
         user_items = (
@@ -1086,6 +1105,7 @@ async def get_my_batch_history(
         batches.append(
             UserBatchHistoryEntryResponse(
                 lobby_id=lobby.id,
+                batch_number=batch_numbers.get(lobby.id, lobby.id),
                 status=lobby.status.value,
                 target_item_amount=lobby.target_item_amount,
                 final_item_amount=lobby.current_item_amount,
@@ -1131,6 +1151,7 @@ async def admin_dashboard(
         )
     ).scalars().all()
 
+    batch_numbers = await get_chronological_batch_numbers(db, school_id, retailer)
     batches = []
     for lobby in triggered_lobbies:
         rows = (
@@ -1152,7 +1173,9 @@ async def admin_dashboard(
             )
         ).scalars().all()
 
-        batches.append(_build_admin_batch(lobby, rows, successful_payments))
+        batch = _build_admin_batch(lobby, rows, successful_payments)
+        batch.batch_number = batch_numbers.get(lobby.id, lobby.id)
+        batches.append(batch)
 
     return AdminDashboardResponse(
         current_open_lobby=LobbySnapshotResponse(
