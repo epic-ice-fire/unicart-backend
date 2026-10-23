@@ -111,46 +111,6 @@ async def get_current_open_main_lobby_or_create(db: AsyncSession, school_id: str
 
 
 
-async def get_shared_access_source(db: AsyncSession, *, user_id: int, school_id: str, retailer: str):
-    """Find a paid, still-open lobby that grants cross-retailer access."""
-    retailer = _normalize_retailer(retailer)
-    return (await db.execute(
-        select(Lobby, PaymentTransaction)
-        .join(PaymentTransaction, PaymentTransaction.lobby_id == Lobby.id)
-        .where(
-            Lobby.title == MAIN_LOBBY_TITLE, Lobby.school_id == school_id,
-            Lobby.retailer != retailer, Lobby.status == LobbyStatus.open,
-            PaymentTransaction.user_id == user_id,
-            PaymentTransaction.status == PaymentStatus.success,
-        )
-        .order_by(desc(PaymentTransaction.paid_at), desc(PaymentTransaction.id))
-    )).first()
-
-
-async def ensure_shared_channel_pass(db: AsyncSession, *, lobby: Lobby, user: User, source) -> None:
-    existing = (await db.execute(select(LobbyPass).where(
-        LobbyPass.lobby_id == lobby.id, LobbyPass.user_id == user.id,
-        LobbyPass.status == PassStatus.active,
-    ))).scalar_one_or_none()
-    if existing:
-        if existing.shared_access_source_lobby_id is not None and existing.shared_access_source_lobby_id != source[0].id:
-            existing.shared_access_source_lobby_id = source[0].id
-        return
-    db.add(LobbyPass(
-        lobby_id=lobby.id, user_id=user.id, entry_fee_amount=settings.ENTRY_FEE_NGN,
-        status=PassStatus.active, paid_at=source[1].paid_at or _utcnow(),
-        shared_access_source_lobby_id=source[0].id,
-    ))
-    await db.flush()
-    await record_audit_event(
-        db, event_type="SHARED_RETAILER_ACCESS_GRANTED", subject_user_id=user.id,
-        lobby_id=lobby.id, payment_reference=source[1].reference,
-        amount_ngn=source[1].amount_ngn,
-        details={"source_lobby_id": source[0].id, "source_retailer": source[0].retailer,
-                 "target_retailer": lobby.retailer},
-    )
-
-
 async def recalculate_lobby_totals(
     db: AsyncSession,
     lobby: Lobby,
@@ -469,7 +429,7 @@ async def main_lobby_details(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
 
     active_pass = (
@@ -480,14 +440,6 @@ async def main_lobby_details(
             )
         )
     ).scalar_one_or_none()
-    shared_access_source = await get_shared_access_source(
-        db, user_id=user.id, school_id=user.school_id, retailer=retailer,
-    )
-    if active_pass and active_pass.shared_access_source_lobby_id is not None and not shared_access_source:
-        active_pass.status = PassStatus.left
-        active_pass.left_at = _utcnow()
-        active_pass = None
-
     latest_left_pass = (
         await db.execute(
             select(LobbyPass)
@@ -578,7 +530,7 @@ async def main_lobby_details(
         current_item_amount=lobby.current_item_amount,
         target_item_amount=lobby.target_item_amount,
         member_count=lobby.member_count,
-        has_joined=(active_pass is not None and (active_pass.shared_access_source_lobby_id is None or shared_access_source is not None)) or shared_access_source is not None,
+        has_joined=active_pass is not None,
         my_active_item_count=my_items_count,
         my_total_item_amount=my_paid_total,
         entry_fee_amount=settings.ENTRY_FEE_NGN,
@@ -589,9 +541,9 @@ async def main_lobby_details(
         ),
         latest_payment_status=latest_payment.status.value if latest_payment else None,
         latest_payment_reference=latest_payment.reference if latest_payment else None,
-        has_successful_payment_for_current_lobby=successful_payment is not None or shared_access_source is not None,
-        has_shared_access=shared_access_source is not None,
-        shared_access_source_lobby_id=shared_access_source[0].id if shared_access_source else None,
+        has_successful_payment_for_current_lobby=successful_payment is not None,
+        has_shared_access=False,
+        shared_access_source_lobby_id=None,
     )
 
 
@@ -612,15 +564,6 @@ async def join_main_lobby(
         )
     ).scalar_one_or_none()
 
-    if existing_pass and existing_pass.shared_access_source_lobby_id is not None:
-        current_shared_source = await get_shared_access_source(
-            db, user_id=user.id, school_id=user.school_id, retailer=retailer,
-        )
-        if not current_shared_source:
-            existing_pass.status = PassStatus.left
-            existing_pass.left_at = _utcnow()
-            await db.flush()
-            existing_pass = None
     if existing_pass:
         raise HTTPException(409, "You already joined the main lobby.")
 
@@ -655,21 +598,8 @@ async def join_main_lobby(
         )
     ).scalars().first()
 
-    shared_access_source = await get_shared_access_source(
-        db, user_id=user.id, school_id=user.school_id, retailer=retailer,
-    )
-    if not successful_payment and not shared_access_source:
+    if not successful_payment:
         raise HTTPException(402, "Pay the entry fee first before joining.")
-    if shared_access_source:
-        await ensure_shared_channel_pass(db, lobby=lobby, user=user, source=shared_access_source)
-        await recalculate_lobby_totals(db, lobby, allow_trigger=False)
-        await db.commit()
-        await db.refresh(lobby)
-        return JoinLobbyResponse(
-            message="Shared Temu and SHEIN access activated.", lobby_id=lobby.id,
-            entry_fee_amount=0, member_count=lobby.member_count,
-        )
-
     new_pass = LobbyPass(
         lobby_id=lobby.id, user_id=user.id,
         entry_fee_amount=settings.ENTRY_FEE_NGN,
@@ -742,13 +672,8 @@ async def add_item_to_main_lobby(
         PaymentTransaction.lobby_id == lobby.id, PaymentTransaction.user_id == user.id,
         PaymentTransaction.status == PaymentStatus.success,
     ).limit(1))).first()
-    shared_access_source = await get_shared_access_source(
-        db, user_id=user.id, school_id=user.school_id, retailer=retailer,
-    )
-    if not ((active_pass and local_success) or shared_access_source):
-        raise HTTPException(403, "Shared access has expired. Pay to join a qualifying open lobby first.")
-    if shared_access_source and not local_success:
-        await ensure_shared_channel_pass(db, lobby=lobby, user=user, source=shared_access_source)
+    if not (active_pass and local_success):
+        raise HTTPException(403, "Pay to join this retailer lobby before adding items.")
     hostname = (urlsplit(payload.item_link).hostname or "").lower().rstrip(".")
     allowed_hosts = ("temu.com",) if retailer == "temu" else (
         "shein.com", "shein.co.uk", "shein.in", "shein.eu", "shein.com.mx",
