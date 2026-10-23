@@ -65,6 +65,9 @@ class User(Base):
     is_student_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     pau_verification_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
     pau_verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    password_reset_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    password_reset_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    password_reset_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     # Explicit school-scoped admin authorization; is_admin remains for older clients.
     admin_role: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
