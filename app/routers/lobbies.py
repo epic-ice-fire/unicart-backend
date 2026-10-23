@@ -542,8 +542,8 @@ async def main_lobby_details(
         latest_payment_status=latest_payment.status.value if latest_payment else None,
         latest_payment_reference=latest_payment.reference if latest_payment else None,
         has_successful_payment_for_current_lobby=successful_payment is not None,
-        has_shared_access=False,
-        shared_access_source_lobby_id=None,
+        has_shared_access=(active_pass is not None and active_pass.shared_access_source_lobby_id is not None),
+        shared_access_source_lobby_id=(active_pass.shared_access_source_lobby_id if active_pass else None),
     )
 
 
