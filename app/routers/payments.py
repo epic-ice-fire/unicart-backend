@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user, require_admin
+from app.deps import admin_role_for, get_current_user, require_admin, require_school_scope
 from app.email_service import send_user_payment_receipt
 from app.notification_recipients import send_to_user_addresses
 from app.models import (
@@ -1430,6 +1430,12 @@ async def reconcile_payment(
     if not payment and not item:
         raise HTTPException(404, "Payment reference not found.")
 
+    lobby_id = payment.lobby_id if payment else item.lobby_id
+    lobby = await db.get(Lobby, lobby_id)
+    if not lobby:
+        raise HTTPException(404, "Lobby not found.")
+    require_school_scope(admin_user, lobby.school_id)
+
     if payment:
         payment_kind = "entry_fee"
         expected_amount = payment.amount_ngn
@@ -1528,6 +1534,8 @@ async def list_financial_audit_events(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    if admin_role_for(admin_user) != "super_admin":
+        raise HTTPException(403, "Only the superior admin can view the platform-wide financial audit.")
     query = select(FinancialAuditEvent).order_by(FinancialAuditEvent.id.desc()).limit(limit)
     if reference:
         reference = _validate_reference_input(reference)
