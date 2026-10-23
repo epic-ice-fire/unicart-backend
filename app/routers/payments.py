@@ -837,7 +837,39 @@ async def initialize_entry_fee_payment(
         )
     ).scalar_one_or_none()
     if existing_pass:
-        raise HTTPException(409, "You already joined this lobby.")
+        raise HTTPException(409, "You already have access to this retailer lobby.")
+
+    # Never start a second checkout when the user already paid for the paired
+    # retailer. This also repairs access for older payments when the user reaches
+    # checkout directly before /main/details has backfilled the paired pass.
+    paired_retailer = "shein" if retailer == "temu" else "temu"
+    paired_payment_row = (
+        await db.execute(
+            select(PaymentTransaction, Lobby)
+            .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
+            .where(
+                PaymentTransaction.user_id == user.id,
+                PaymentTransaction.status == PaymentStatus.success,
+                Lobby.title == "MAIN",
+                Lobby.school_id == user.school_id,
+                Lobby.retailer == paired_retailer,
+            )
+            .order_by(desc(PaymentTransaction.id))
+        )
+    ).first()
+    if paired_payment_row:
+        source_payment, source_lobby = paired_payment_row
+        await _grant_paired_retailer_access(
+            db,
+            user_id=user.id,
+            paid_lobby=source_lobby,
+            paid_at=source_payment.paid_at or _utcnow(),
+        )
+        await db.commit()
+        raise HTTPException(
+            409,
+            "Your existing ₦2,000 payment already unlocks both Temu and SHEIN. Refresh the lobby; no second payment is needed.",
+        )
 
     existing_pending = (
         await db.execute(
