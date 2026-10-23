@@ -50,6 +50,7 @@ from app.routers.lobbies import (
     auto_remove_unpaid_items_on_trigger,
     maybe_open_next_main_lobby,
     send_trigger_emails,
+    get_current_open_main_lobby_or_create,
 )
 
 logger = logging.getLogger("unicart.payments")
@@ -562,6 +563,58 @@ async def _claim_gateway_transaction(
         raise HTTPException(409, "Payment is already being processed.")
 
 
+async def _grant_paired_retailer_access(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    paid_lobby: Lobby,
+    paid_at: datetime,
+) -> LobbyPass | None:
+    """Grant access to the other retailer's current lobby without sharing items or MOV totals."""
+    paired_retailer = "shein" if paid_lobby.retailer == "temu" else "temu"
+    paired_lobby = await get_current_open_main_lobby_or_create(
+        db, paid_lobby.school_id, paired_retailer
+    )
+    existing = (
+        await db.execute(
+            select(LobbyPass).where(
+                LobbyPass.lobby_id == paired_lobby.id,
+                LobbyPass.user_id == user_id,
+                LobbyPass.status == PassStatus.active,
+            ).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+
+    paired_pass = LobbyPass(
+        lobby_id=paired_lobby.id,
+        user_id=user_id,
+        entry_fee_amount=0,
+        status=PassStatus.active,
+        paid_at=paid_at,
+        shared_access_source_lobby_id=paid_lobby.id,
+    )
+    # The paired pass is access only. The actual ₦2,000 transaction remains
+    # attached to the paid retailer lobby, and no item/MOV data is copied.
+    try:
+        async with db.begin_nested():
+            db.add(paired_pass)
+            await db.flush()
+    except IntegrityError:
+        return (
+            await db.execute(
+                select(LobbyPass).where(
+                    LobbyPass.lobby_id == paired_lobby.id,
+                    LobbyPass.user_id == user_id,
+                    LobbyPass.status == PassStatus.active,
+                )
+            )
+        ).scalar_one_or_none()
+    paired_lobby.member_count += 1
+    return paired_pass
+
+
 async def _mark_entry_payment_success(
     db: AsyncSession,
     *,
@@ -640,6 +693,13 @@ async def _mark_entry_payment_success(
         db,
         user_id=locked_payment.user_id,
         lobby=membership_lobby,
+        paid_at=locked_payment.paid_at,
+    )
+
+    paired_pass = await _grant_paired_retailer_access(
+        db,
+        user_id=locked_payment.user_id,
+        paid_lobby=membership_lobby,
         paid_at=locked_payment.paid_at,
     )
 
