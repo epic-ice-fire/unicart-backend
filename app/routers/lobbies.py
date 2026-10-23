@@ -466,7 +466,9 @@ async def main_lobby_details(
                 entry_fee_amount=settings.ENTRY_FEE_NGN,
                 status=PassStatus.active,
                 paid_at=source_payment.paid_at or _utcnow(),
-                shared_access_source_lobby_id=source_lobby.id,
+                shared_access_source_lobby_id=(
+                    source_lobby.id if source_lobby.retailer != retailer else None
+                ),
             )
             try:
                 async with db.begin_nested():
