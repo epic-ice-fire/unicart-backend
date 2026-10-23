@@ -444,7 +444,6 @@ async def main_lobby_details(
     # Backfill paired-retailer access for users who paid before the paired-pass
     # feature was deployed. Access is shared; retailer items/MOVs are not.
     if active_pass is None:
-        paired_retailer = "shein" if retailer == "temu" else "temu"
         paired_payment = (
             await db.execute(
                 select(PaymentTransaction, Lobby)
@@ -454,7 +453,7 @@ async def main_lobby_details(
                     PaymentTransaction.status == PaymentStatus.success,
                     Lobby.title == MAIN_LOBBY_TITLE,
                     Lobby.school_id == user.school_id,
-                    Lobby.retailer == paired_retailer,
+                    Lobby.retailer.in_(["temu", "shein"]),
                 )
                 .order_by(desc(PaymentTransaction.id))
             )
