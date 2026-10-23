@@ -264,6 +264,21 @@ class FinancialAuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, index=True)
 
 
+class AdminInvite(Base):
+    """Single-use, short-lived invitation for a school administrator."""
+
+    __tablename__ = "admin_invites"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    school_id: Mapped[str] = mapped_column(String(40), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class CampusSelection(Base):
     """Self-reported campus selection made at login, for aggregate campus research."""
 
