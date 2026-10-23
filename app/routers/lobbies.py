@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import record_audit_event
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user, require_admin
+from app.deps import get_current_user, require_admin, require_school_scope
 from app.notification_recipients import send_to_user_addresses
 from app.models import (
     Lobby, LobbyItem, LobbyPass, LobbyStatus, PassStatus,
@@ -425,6 +425,7 @@ async def create_main_lobby(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    require_school_scope(admin_user, school_id)
     retailer = _normalize_retailer(retailer)
     existing_open = await get_current_open_main_lobby(db, school_id, retailer)
     if existing_open:
@@ -809,6 +810,10 @@ async def remove_my_item_from_main_lobby(
 
     if not item:
         raise HTTPException(404, "Item not found.")
+    item_lobby = await db.get(Lobby, item.lobby_id)
+    if not item_lobby:
+        raise HTTPException(404, "Lobby not found.")
+    require_school_scope(admin_user, item_lobby.school_id)
     if not item.is_active:
         raise HTTPException(409, "This item has already been removed.")
     if item_is_locked(item):
@@ -1128,6 +1133,7 @@ async def admin_dashboard(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    require_school_scope(admin_user, school_id)
     retailer = _normalize_retailer(retailer)
     current_open_lobby = await get_current_open_main_lobby_or_create(db, school_id, retailer)
     await recalculate_lobby_totals(db, current_open_lobby, allow_trigger=False)
@@ -1194,8 +1200,9 @@ async def admin_update_open_lobby_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    require_school_scope(admin_user, school_id)
     retailer = _normalize_retailer(retailer)
-    lobby = await get_current_open_main_lobby_or_create(db, school_id)
+    lobby = await get_current_open_main_lobby_or_create(db, school_id, retailer)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
@@ -1255,6 +1262,7 @@ async def admin_update_batch_status(
 
     if not lobby:
         raise HTTPException(404, "Batch not found.")
+    require_school_scope(admin_user, lobby.school_id)
 
     if new_status == lobby.status:
         # Idempotent retry: do not resend customer status emails.
@@ -1402,8 +1410,9 @@ async def update_main_target(
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    require_school_scope(admin_user, school_id)
     retailer = _normalize_retailer(retailer)
-    lobby = await get_current_open_main_lobby_or_create(db, school_id)
+    lobby = await get_current_open_main_lobby_or_create(db, school_id, retailer)
     old_target = lobby.target_item_amount
     lobby.target_item_amount = payload.target_item_amount
     await recalculate_lobby_totals(db, lobby)
