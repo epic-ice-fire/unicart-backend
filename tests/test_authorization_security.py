@@ -361,18 +361,26 @@ async def test_late_entry_fee_moves_customer_to_current_open_lobby(db_session):
     await db_session.commit()
     await db_session.refresh(payment)
 
-    active_pass = (
+    active_passes = (
         await db_session.execute(
             select(LobbyPass).where(
                 LobbyPass.user_id == user.id,
                 LobbyPass.status == PassStatus.active,
             )
         )
-    ).scalar_one()
+    ).scalars().all()
+
+    # One entry fee now unlocks both retailer lobbies: exactly one DIRECT pass
+    # in the current open lobby, plus a paired pass for the other retailer
+    # that points back at the lobby that was actually paid for.
+    direct_passes = [p for p in active_passes if p.shared_access_source_lobby_id is None]
+    paired_passes = [p for p in active_passes if p.shared_access_source_lobby_id is not None]
 
     assert processed is True
     assert joined is True
-    assert active_pass.lobby_id == new_lobby.id
+    assert len(direct_passes) == 1
+    assert direct_passes[0].lobby_id == new_lobby.id
+    assert all(p.shared_access_source_lobby_id == new_lobby.id for p in paired_passes)
     assert payment.lobby_id == new_lobby.id
 
 

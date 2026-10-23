@@ -1,0 +1,23 @@
+name: Keep API awake
+
+# Stopgap for Render's free plan, which puts the API to sleep after ~15 minutes
+# without traffic (the next visitor then waits up to a minute). This pings the
+# health endpoint every 10 minutes. The real fix is a paid Render instance;
+# delete this workflow once you upgrade.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping /health
+        run: |
+          curl -fsS --retry 3 --retry-delay 10 --max-time 60 \
+            https://unicart-backend-v6u9.onrender.com/health

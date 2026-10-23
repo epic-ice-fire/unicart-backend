@@ -95,9 +95,42 @@ def _send_via_gmail_api(gmail_user: str, subject: str, to_email: str, html_body:
         return False
 
 
-def _send(to_email: str, subject: str, html_body: str) -> bool:
-    """Send through Gmail API OAuth first, with App Password SMTP as fallback."""
+def _send_via_resend(to_email: str, subject: str, html_body: str) -> bool:
+    """Send through Resend (https://resend.com), a transactional email API."""
     settings = _get_settings()
+    if not settings.resend_configured:
+        return False
+    try:
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+            json={
+                "from": settings.EMAIL_FROM,
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+            },
+            timeout=8.0,
+        )
+        if response.status_code not in (200, 201, 202):
+            logger.error(
+                "[UniCart Email] Resend send failed (HTTP %s): %s",
+                response.status_code,
+                response.text[:300],
+            )
+            return False
+        logger.info("[UniCart Email] Resend sent message to %s | %s", to_email, subject)
+        return True
+    except Exception:
+        logger.exception("[UniCart Email] Resend delivery failed for %s", to_email)
+        return False
+
+
+def _send(to_email: str, subject: str, html_body: str) -> bool:
+    """Send via Resend when configured, else Gmail API OAuth, else Gmail SMTP."""
+    settings = _get_settings()
+    if _send_via_resend(to_email, subject, html_body):
+        return True
     gmail_user = settings.GMAIL_USER
     gmail_password = settings.GMAIL_APP_PASSWORD
     api_configured = all((

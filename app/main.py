@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import Response
 
+from app.network import client_ip
 from app.routers import auth, lobbies, payments
 from app.config import settings
 from app.db import Base, engine
@@ -22,6 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("unicart")
 
+_ip_debug_logged = 0
 _PAYMENT_REF_RE = re.compile(r"unicart_(?:entry|item)_[A-Za-z0-9_-]+")
 _CALLBACK_CLOSE_BUTTON = '<button onclick="window.close()">Close tab</button>'
 
@@ -147,11 +149,29 @@ async def lifespan(app: FastAPI):
             await conn.exec_driver_sql(
                 "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password_reset_attempts INTEGER NOT NULL DEFAULT 0"
             )
+            await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL"
+            )
             logger.info("Multi-school database migration checked/applied.")
 
     yield
     await engine.dispose()
 
+
+if settings.SENTRY_DSN:
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=settings.SENTRY_DSN,
+            environment=settings.ENVIRONMENT,
+            # Errors only: no performance tracing and no personal data.
+            traces_sample_rate=0.0,
+            send_default_pii=False,
+        )
+        logger.info("Sentry error tracking enabled.")
+    except Exception:  # never let monitoring stop the API from starting
+        logger.exception("Could not start Sentry; continuing without it.")
 
 app = FastAPI(
     title="UniCart API",
@@ -203,6 +223,17 @@ async def request_middleware(request: Request, call_next):
                 content={"detail": "Request body is too large."},
                 headers={"X-Request-ID": request_id, "Cache-Control": "no-store"},
             )
+
+    global _ip_debug_logged
+    if _ip_debug_logged < 5 and request.url.path != "/health":
+        _ip_debug_logged += 1
+        logger.info(
+            "Client IP check: detected=%s peer=%s x-forwarded-for-entries=%s proxies=%s",
+            client_ip(request),
+            request.client.host if request.client else "unknown",
+            len([p for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]),
+            settings.TRUSTED_PROXY_COUNT,
+        )
 
     try:
         response = await call_next(request)

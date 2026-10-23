@@ -8,14 +8,30 @@ import secrets
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
 from app.deps import admin_role_for, get_current_session, get_current_user, require_admin
-from app.models import AdminInvite, AuthSession, CampusSelection, User
+from app.network import client_ip
+from app.audit import record_audit_event
+from app.models import (
+    AdminInvite,
+    AuthSession,
+    CampusSelection,
+    ItemPaymentStatus,
+    Lobby,
+    LobbyItem,
+    LobbyPass,
+    LobbyStatus,
+    PassStatus,
+    PauEmailVerification,
+    PaymentStatus,
+    PaymentTransaction,
+    User,
+)
 from app.rate_limit import rate_limiter
 from app.schemas import (
     RegisterRequest,
@@ -67,8 +83,7 @@ def _hash_pau_code(code: str) -> str:
 
 
 def _client_key(request: Request) -> str:
-    host = request.client.host if request.client else "unknown"
-    return host
+    return client_ip(request)
 
 
 def _hash_client_metadata(value: str | None) -> str | None:
@@ -254,7 +269,7 @@ async def request_password_reset(
         user.password_reset_expires_at = _utcnow() + timedelta(minutes=15)
         user.password_reset_attempts = 0
         await db.commit()
-        if not send_password_reset_code(email, code, 15):
+        if not await asyncio.to_thread(send_password_reset_code, email, code, 15):
             logger.error("Password reset email delivery failed for an eligible account.")
     return {"message": "If that email has an account, we've sent a 6-digit code."}
 
@@ -457,11 +472,26 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     email = payload.email.lower().strip()
+    # Limits are deliberately generous per network (a campus shares one public
+    # IP on Wi-Fi). The per-email and sitewide caps stop floods without ever
+    # blocking ordinary students signing up during a busy day.
     await rate_limiter.enforce(
-        key=f"register:{_client_key(request)}",
-        limit=10,
+        key=f"register:ip:{_client_key(request)}",
+        limit=settings.RATE_LIMIT_REGISTER_PER_IP_HOUR,
         window_seconds=3600,
-        detail="Too many registration attempts from this device/network. Try again later.",
+        detail="Too many registration attempts from this network. Try again later.",
+    )
+    await rate_limiter.enforce(
+        key=f"register:email:{email}",
+        limit=5,
+        window_seconds=3600,
+        detail="Too many registration attempts for this email. Try again later.",
+    )
+    await rate_limiter.enforce(
+        key="register:global",
+        limit=settings.RATE_LIMIT_REGISTER_GLOBAL_HOUR,
+        window_seconds=3600,
+        detail="UniCart is very busy right now. Please try again in a few minutes.",
     )
 
     existing_user = (
@@ -661,7 +691,7 @@ async def request_pau_code(
     )
     await rate_limiter.enforce(
         key=f"pau-request:ip:{_client_key(request)}",
-        limit=20,
+        limit=settings.RATE_LIMIT_CODE_REQUEST_PER_IP_HOUR,
         window_seconds=3600,
         detail="Too many verification-code requests from this device/network.",
     )
@@ -768,7 +798,7 @@ async def verify_pau_code(
     )
     await rate_limiter.enforce(
         key=f"pau-verify:ip:{_client_key(request)}",
-        limit=30,
+        limit=settings.RATE_LIMIT_CODE_VERIFY_PER_IP_10MIN,
         window_seconds=600,
         detail="Too many verification attempts from this device/network.",
     )
@@ -808,6 +838,152 @@ async def verify_pau_code(
         student_pau_email=user.student_pau_email,
         is_student_verified=user.is_student_verified,
     )
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/account/delete")
+async def delete_my_account(
+    payload: DeleteAccountRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete the signed-in user's personal data (Google Play / privacy law).
+
+    Personal details are erased and the account can no longer sign in. Payment
+    and audit rows are kept for accounting, but are anonymised because they only
+    reference the numeric user id. Deletion is refused while money is locked in
+    an unfinished batch so no one's order is lost.
+    """
+    await rate_limiter.enforce(
+        key=f"account-delete:user:{user.id}",
+        limit=5,
+        window_seconds=3600,
+        detail="Too many attempts. Try again later.",
+    )
+
+    if user.is_admin or admin_role_for(user) is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Admin accounts cannot be deleted from the app. Contact the UniCart owner.",
+        )
+    if not user.password_hash or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=403, detail="Incorrect password.")
+
+    now = _utcnow()
+
+    locked_item = (
+        await db.execute(
+            select(LobbyItem.id)
+            .join(Lobby, Lobby.id == LobbyItem.lobby_id)
+            .where(
+                LobbyItem.user_id == user.id,
+                LobbyItem.is_active.is_(True),
+                LobbyItem.item_payment_status.in_(
+                    [ItemPaymentStatus.pending, ItemPaymentStatus.paid]
+                ),
+                Lobby.status != LobbyStatus.completed,
+            )
+            .limit(1)
+        )
+    ).first()
+    if locked_item:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "You still have paid or payment-in-progress items in an active batch. "
+                "You can delete your account after that batch is delivered, or contact support."
+            ),
+        )
+
+    recent_cutoff = now - timedelta(minutes=settings.PAYMENT_CHECKOUT_TTL_MINUTES * 2)
+    pending_entry = (
+        await db.execute(
+            select(PaymentTransaction.id)
+            .where(
+                PaymentTransaction.user_id == user.id,
+                PaymentTransaction.status == PaymentStatus.pending,
+                PaymentTransaction.created_at >= recent_cutoff,
+            )
+            .limit(1)
+        )
+    ).first()
+    if pending_entry:
+        raise HTTPException(
+            status_code=409,
+            detail="You have a payment in progress. Try again in a few minutes.",
+        )
+
+    # Leave lobbies (the entry fee is non-refundable, exactly like leaving by
+    # hand) and drop any unpaid items so lobby totals stay correct.
+    from app.routers.lobbies import recalculate_lobby_totals
+
+    active_passes = (
+        await db.execute(
+            select(LobbyPass).where(
+                LobbyPass.user_id == user.id,
+                LobbyPass.status == PassStatus.active,
+            )
+        )
+    ).scalars().all()
+    touched_lobby_ids = {p.lobby_id for p in active_passes}
+    for lobby_pass in active_passes:
+        lobby_pass.status = PassStatus.left
+        lobby_pass.left_at = now
+
+    open_items = (
+        await db.execute(
+            select(LobbyItem).where(
+                LobbyItem.user_id == user.id,
+                LobbyItem.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    for item in open_items:
+        if item.item_payment_status != ItemPaymentStatus.paid:
+            item.is_active = False
+            item.removed_at = now
+            touched_lobby_ids.add(item.lobby_id)
+    await db.flush()
+
+    for lobby_id in touched_lobby_ids:
+        lobby = (
+            await db.execute(select(Lobby).where(Lobby.id == lobby_id))
+        ).scalar_one_or_none()
+        if lobby is not None:
+            await recalculate_lobby_totals(db, lobby, allow_trigger=False)
+
+    await db.execute(delete(AuthSession).where(AuthSession.user_id == user.id))
+    await db.execute(delete(PauEmailVerification).where(PauEmailVerification.user_id == user.id))
+    await db.execute(delete(CampusSelection).where(CampusSelection.user_id == user.id))
+
+    # Anonymise the row itself. The id is kept so payment and audit history
+    # stay consistent, but nothing identifies the person any more.
+    user.email = f"deleted-{user.id}-{secrets.token_hex(4)}@deleted.invalid"
+    user.phone_number = None
+    user.name = ""
+    user.password_hash = None
+    user.google_sub = None
+    user.student_pau_email = None
+    user.is_student_verified = False
+    user.pau_verification_code = None
+    user.pau_verification_expires_at = None
+    user.password_reset_code_hash = None
+    user.password_reset_expires_at = None
+    user.password_reset_attempts = 0
+    user.deleted_at = now
+
+    await record_audit_event(
+        db,
+        event_type="ACCOUNT_DELETED",
+        actor_user_id=user.id,
+        subject_user_id=user.id,
+        details={"self_service": True},
+    )
+    await db.commit()
+    return {"message": "Your account and personal details have been deleted."}
 
 
 class CampusSelectionRequest(BaseModel):

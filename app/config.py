@@ -88,6 +88,32 @@ class Settings:
         self.ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "unicartbytekena@gmail.com").strip().lower()
         # Required for one-time bootstrap of the first superior admin.
         self.ADMIN_BOOTSTRAP_SECRET: str = os.getenv("ADMIN_BOOTSTRAP_SECRET", "").strip()
+        # Transactional email (recommended): https://resend.com . When both are
+        # set, UniCart sends through Resend first and only falls back to Gmail.
+        self.RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "").strip()
+        self.EMAIL_FROM: str = os.getenv("EMAIL_FROM", "").strip()
+        # Optional error tracking. Leave blank to disable.
+        self.SENTRY_DSN: str = os.getenv("SENTRY_DSN", "").strip()
+        # How many reverse proxies sit in front of the API (Render = 2). Used to
+        # find the real visitor IP in X-Forwarded-For for rate limiting. Set 0
+        # if the API is exposed directly. See app/network.py.
+        self.TRUSTED_PROXY_COUNT: int = int(
+            os.getenv("TRUSTED_PROXY_COUNT", "2" if self.ENVIRONMENT == "production" else "0")
+        )
+        # Per-network limits are generous on purpose: a whole campus often
+        # shares one public IP address on Wi-Fi.
+        self.RATE_LIMIT_REGISTER_PER_IP_HOUR: int = int(
+            os.getenv("RATE_LIMIT_REGISTER_PER_IP_HOUR", "60")
+        )
+        self.RATE_LIMIT_REGISTER_GLOBAL_HOUR: int = int(
+            os.getenv("RATE_LIMIT_REGISTER_GLOBAL_HOUR", "1500")
+        )
+        self.RATE_LIMIT_CODE_REQUEST_PER_IP_HOUR: int = int(
+            os.getenv("RATE_LIMIT_CODE_REQUEST_PER_IP_HOUR", "200")
+        )
+        self.RATE_LIMIT_CODE_VERIFY_PER_IP_10MIN: int = int(
+            os.getenv("RATE_LIMIT_CODE_VERIFY_PER_IP_10MIN", "300")
+        )
         self.GMAIL_USER: str = os.getenv("GMAIL_USER", "").strip()
         self.GMAIL_APP_PASSWORD: str = os.getenv("GMAIL_APP_PASSWORD", "").strip()
         self.GMAIL_API_CLIENT_ID: str = os.getenv("GMAIL_API_CLIENT_ID", "").strip()
@@ -112,6 +138,10 @@ class Settings:
         self.ALLOWED_HOSTS: list[str] = self._parse_hosts(
             os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver")
         )
+
+    @property
+    def resend_configured(self) -> bool:
+        return bool(self.RESEND_API_KEY and self.EMAIL_FROM)
 
     @property
     def is_production(self) -> bool:
@@ -155,11 +185,14 @@ class Settings:
                     "GMAIL_API_CLIENT_ID, GMAIL_API_CLIENT_SECRET and "
                     "GMAIL_API_REFRESH_TOKEN together."
                 )
-            if not self.GMAIL_USER or not (gmail_api_ready or self.GMAIL_APP_PASSWORD):
+            gmail_ready = bool(self.GMAIL_USER and (gmail_api_ready or self.GMAIL_APP_PASSWORD))
+            if not (self.resend_configured or gmail_ready):
                 errors.append(
-                    "Email delivery requires GMAIL_USER plus either complete Gmail API OAuth "
-                    "credentials or GMAIL_APP_PASSWORD."
+                    "Email delivery requires RESEND_API_KEY plus EMAIL_FROM, or GMAIL_USER plus "
+                    "either complete Gmail API OAuth credentials or GMAIL_APP_PASSWORD."
                 )
+            if bool(self.RESEND_API_KEY) != bool(self.EMAIL_FROM):
+                errors.append("Set RESEND_API_KEY and EMAIL_FROM together.")
 
             if "*" in self.BACKEND_CORS_ORIGINS:
                 errors.append("Wildcard CORS origins are forbidden in production.")
@@ -188,6 +221,16 @@ class Settings:
             if public_app.hostname in {"localhost", "127.0.0.1", "::1"}:
                 errors.append("PUBLIC_APP_URL cannot point to localhost in production.")
 
+        if self.TRUSTED_PROXY_COUNT < 0 or self.TRUSTED_PROXY_COUNT > 5:
+            errors.append("TRUSTED_PROXY_COUNT must be between 0 and 5.")
+        for _name in (
+            "RATE_LIMIT_REGISTER_PER_IP_HOUR",
+            "RATE_LIMIT_REGISTER_GLOBAL_HOUR",
+            "RATE_LIMIT_CODE_REQUEST_PER_IP_HOUR",
+            "RATE_LIMIT_CODE_VERIFY_PER_IP_10MIN",
+        ):
+            if getattr(self, _name) < 1:
+                errors.append(f"{_name} must be at least 1.")
         if self.ALGORITHM != "HS256":
             errors.append("UniCart currently supports HS256 JWT signing only.")
         if self.ACCESS_TOKEN_EXPIRE_MINUTES <= 0 or self.ACCESS_TOKEN_EXPIRE_MINUTES > 1440:

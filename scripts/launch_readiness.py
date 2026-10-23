@@ -96,6 +96,10 @@ def _gmail_api_values() -> tuple[str, str, str]:
 
 
 async def _check_gmail_api(send_test_email: bool) -> None:
+    if settings.resend_configured:
+        _pass("Email delivery is configured through Resend.")
+        return
+
     client_id, client_secret, refresh_token = _gmail_api_values()
 
     if not settings.GMAIL_USER:

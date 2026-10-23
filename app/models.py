@@ -73,6 +73,8 @@ class User(Base):
     admin_role: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
     admin_school_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
+    # Set when the user deleted their account; personal fields are erased.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AuthSession(Base):
