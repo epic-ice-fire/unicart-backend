@@ -85,7 +85,9 @@ class Settings:
             os.getenv("PAU_CODE_EXPIRES_MINUTES", "10")
         )
         self.DEBUG_RETURN_PAU_CODE: bool = _env_bool("DEBUG_RETURN_PAU_CODE", False)
-        self.ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "unicartbytekena@gmail.com")
+        self.ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "unicartbytekena@gmail.com").strip().lower()
+        # Required for one-time bootstrap of the first superior admin.
+        self.ADMIN_BOOTSTRAP_SECRET: str = os.getenv("ADMIN_BOOTSTRAP_SECRET", "").strip()
         self.GMAIL_USER: str = os.getenv("GMAIL_USER", "").strip()
         self.GMAIL_APP_PASSWORD: str = os.getenv("GMAIL_APP_PASSWORD", "").strip()
         self.GMAIL_API_CLIENT_ID: str = os.getenv("GMAIL_API_CLIENT_ID", "").strip()
