@@ -205,13 +205,6 @@ class AcceptAdminInviteRequest(BaseModel):
     token: str = Field(min_length=32, max_length=128)
     password: str = Field(min_length=12, max_length=128)
 
-    @classmethod
-    def model_validate(cls, obj, **kwargs):
-        # Pydantic's normal validation runs first; the shared UniCart password
-        # policy is applied explicitly by the endpoint before hashing.
-        return super().model_validate(obj, **kwargs)
-
-
 @router.post("/admin/bootstrap")
 async def bootstrap_super_admin(
     payload: AdminBootstrapRequest,
