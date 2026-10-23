@@ -265,7 +265,6 @@ async def create_school_admin_invite(
     }
 
 
-@router.post("/admin/accept-invite", status_code=201)
 @router.post("/admin/promote-existing")
 async def promote_existing_school_admin(
     payload: PromoteExistingAdminRequest,
@@ -299,6 +298,7 @@ async def promote_existing_school_admin(
     }
 
 
+@router.post("/admin/accept-invite", status_code=201)
 async def accept_school_admin_invite(
     payload: AcceptAdminInviteRequest,
     request: Request,
