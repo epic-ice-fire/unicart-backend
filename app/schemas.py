@@ -310,6 +310,7 @@ class MyLobbyItemsListResponse(BaseModel):
 
 class UserBatchHistoryEntryResponse(BaseModel):
     lobby_id: int
+    batch_number: int
     status: str
     target_item_amount: int
     final_item_amount: int
@@ -348,6 +349,7 @@ class AdminBatchItemResponse(BaseModel):
 
 class AdminBatchEntryResponse(BaseModel):
     lobby_id: int
+    batch_number: int = 0
     status: str
     target_item_amount: int
     final_item_amount: int
