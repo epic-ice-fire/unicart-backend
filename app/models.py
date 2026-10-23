@@ -66,6 +66,9 @@ class User(Base):
     pau_verification_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
     pau_verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Explicit school-scoped admin authorization; is_admin remains for older clients.
+    admin_role: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
+    admin_school_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
 
 
