@@ -440,6 +440,51 @@ async def main_lobby_details(
             )
         )
     ).scalar_one_or_none()
+
+    # Backfill paired-retailer access for users who paid before the paired-pass
+    # feature was deployed. Access is shared; retailer items/MOVs are not.
+    if active_pass is None:
+        paired_retailer = "shein" if retailer == "temu" else "temu"
+        paired_payment = (
+            await db.execute(
+                select(PaymentTransaction, Lobby)
+                .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
+                .where(
+                    PaymentTransaction.user_id == user.id,
+                    PaymentTransaction.status == PaymentStatus.success,
+                    Lobby.title == MAIN_LOBBY_TITLE,
+                    Lobby.school_id == user.school_id,
+                    Lobby.retailer == paired_retailer,
+                )
+                .order_by(desc(PaymentTransaction.id))
+            )
+        ).first()
+        if paired_payment:
+            source_payment, source_lobby = paired_payment
+            active_pass = LobbyPass(
+                lobby_id=lobby.id,
+                user_id=user.id,
+                entry_fee_amount=settings.ENTRY_FEE_NGN,
+                status=PassStatus.active,
+                paid_at=source_payment.paid_at or _utcnow(),
+                shared_access_source_lobby_id=source_lobby.id,
+            )
+            try:
+                async with db.begin_nested():
+                    db.add(active_pass)
+                    await db.flush()
+            except IntegrityError:
+                active_pass = (
+                    await db.execute(
+                        select(LobbyPass).where(
+                            LobbyPass.lobby_id == lobby.id,
+                            LobbyPass.user_id == user.id,
+                            LobbyPass.status == PassStatus.active,
+                        )
+                    )
+                ).scalar_one_or_none()
+            if active_pass:
+                await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     latest_left_pass = (
         await db.execute(
             select(LobbyPass)
