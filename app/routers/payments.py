@@ -852,19 +852,37 @@ async def initialize_entry_fee_payment(
                 PaymentTransaction.status == PaymentStatus.success,
                 Lobby.title == "MAIN",
                 Lobby.school_id == user.school_id,
-                Lobby.retailer == paired_retailer,
+                Lobby.retailer.in_(["temu", "shein"]),
             )
             .order_by(desc(PaymentTransaction.id))
         )
     ).first()
     if paired_payment_row:
         source_payment, source_lobby = paired_payment_row
-        await _grant_paired_retailer_access(
-            db,
+        repaired_pass = LobbyPass(
+            lobby_id=lobby.id,
             user_id=user.id,
-            paid_lobby=source_lobby,
+            entry_fee_amount=settings.ENTRY_FEE_NGN,
+            status=PassStatus.active,
             paid_at=source_payment.paid_at or _utcnow(),
+            shared_access_source_lobby_id=(
+                source_lobby.id if source_lobby.retailer != retailer else None
+            ),
         )
+        try:
+            async with db.begin_nested():
+                db.add(repaired_pass)
+                await db.flush()
+        except IntegrityError:
+            repaired_pass = (
+                await db.execute(
+                    select(LobbyPass).where(
+                        LobbyPass.lobby_id == lobby.id,
+                        LobbyPass.user_id == user.id,
+                        LobbyPass.status == PassStatus.active,
+                    )
+                )
+            ).scalar_one_or_none()
         await db.commit()
         raise HTTPException(
             409,
