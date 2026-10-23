@@ -107,6 +107,12 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS ix_users_admin_school_id ON users (admin_school_id)"
             )
             await conn.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS admin_invites (id SERIAL PRIMARY KEY, email VARCHAR(255) NOT NULL, school_id VARCHAR(40) NOT NULL, token_hash VARCHAR(64) NOT NULL UNIQUE, created_by_user_id INTEGER NOT NULL REFERENCES users(id), created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP NOT NULL, used_at TIMESTAMP NULL)"
+            )
+            await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_admin_invites_email ON admin_invites (email)")
+            await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_admin_invites_school_id ON admin_invites (school_id)")
+            await conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_admin_invites_created_by_user_id ON admin_invites (created_by_user_id)")
+            await conn.exec_driver_sql(
                 "ALTER TABLE IF EXISTS lobbies ADD COLUMN IF NOT EXISTS school_id VARCHAR(40) NOT NULL DEFAULT 'pau'"
             )
             await conn.exec_driver_sql(
