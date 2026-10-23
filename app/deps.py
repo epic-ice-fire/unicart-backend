@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import jwt
 
 from app.db import get_db
+from app.config import settings
 from app.models import AuthSession, User
 from app.security import decode_token, hash_session_jti
 
@@ -80,12 +81,29 @@ async def require_verified_student(
     return user
 
 
+def admin_role_for(user: User) -> str | None:
+    """Resolve explicit roles; email alone never grants admin privileges."""
+    role = getattr(user, "admin_role", None)
+    if role in {"super_admin", "school_admin"}:
+        return role
+    # Compatibility only for an already-administered configured owner account.
+    if user.is_admin and user.email.lower() == settings.ADMIN_EMAIL.lower():
+        return "super_admin"
+    return None
+
+
+def require_school_scope(user: User, school_id: str) -> None:
+    role = admin_role_for(user)
+    if role == "super_admin":
+        return
+    if role == "school_admin" and user.admin_school_id == school_id:
+        return
+    raise HTTPException(status_code=403, detail="You do not have admin access to this school.")
+
+
 async def require_admin(
     user: User = Depends(get_current_user),
 ) -> User:
-    if not user.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="Admin access required.",
-        )
+    if not user.is_admin or admin_role_for(user) is None:
+        raise HTTPException(status_code=403, detail="Admin access required.")
     return user
