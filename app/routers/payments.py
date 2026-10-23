@@ -842,7 +842,6 @@ async def initialize_entry_fee_payment(
     # Never start a second checkout when the user already paid for the paired
     # retailer. This also repairs access for older payments when the user reaches
     # checkout directly before /main/details has backfilled the paired pass.
-    paired_retailer = "shein" if retailer == "temu" else "temu"
     paired_payment_row = (
         await db.execute(
             select(PaymentTransaction, Lobby)
