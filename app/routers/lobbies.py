@@ -714,12 +714,12 @@ async def add_item_to_main_lobby(
         )
     ).scalar_one_or_none()
 
-    local_success = (await db.execute(select(PaymentTransaction.id).where(
-        PaymentTransaction.lobby_id == lobby.id, PaymentTransaction.user_id == user.id,
-        PaymentTransaction.status == PaymentStatus.success,
-    ).limit(1))).first()
-    if not (active_pass and local_success):
-        raise HTTPException(403, "Pay to join this retailer lobby before adding items.")
+    # A successful entry-fee payment is attached to the retailer where it was
+    # originally made. The paired retailer pass is access-only, so it correctly
+    # has no duplicate local payment transaction. The active pass is the
+    # authorization record; retailer items and MOV totals remain lobby-specific.
+    if active_pass is None:
+        raise HTTPException(403, "Pay the ₦2,000 entry fee once to unlock both retailer lobbies before adding items.")
     hostname = (urlsplit(payload.item_link).hostname or "").lower().rstrip(".")
     allowed_hosts = ("temu.com",) if retailer == "temu" else (
         "shein.com", "shein.co.uk", "shein.in", "shein.eu", "shein.com.mx",
