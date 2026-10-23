@@ -590,7 +590,7 @@ async def _grant_paired_retailer_access(
     paired_pass = LobbyPass(
         lobby_id=paired_lobby.id,
         user_id=user_id,
-        entry_fee_amount=0,
+        entry_fee_amount=settings.ENTRY_FEE_NGN,
         status=PassStatus.active,
         paid_at=paid_at,
         shared_access_source_lobby_id=paid_lobby.id,
@@ -665,7 +665,7 @@ async def _mark_entry_payment_success(
     membership_lobby = lobby
     transferred_to_next_lobby = False
     if lobby.status != LobbyStatus.open:
-        next_open_lobby = await _get_open_lobby(db, lobby.school_id)
+        next_open_lobby = await _get_open_lobby(db, lobby.school_id, lobby.retailer)
         if not next_open_lobby:
             raise HTTPException(
                 503,
