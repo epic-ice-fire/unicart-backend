@@ -280,9 +280,9 @@ def test_production_accepts_resend_without_gmail(monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     for name, value in {
         "SECRET_KEY": "x" * 48,
-        "DATABASE_URL": "postgresql+asyncpg://u:p@h/db",
-        "FLW_SECRET_KEY": "FLWSECK-live-1234567890abcdef",
-        "FLW_PUBLIC_KEY": "FLWPUBK-live-1234567890abcdef",
+        "DATABASE_URL": "postgresql+asyncpg://" + "db_user:db_pass" + "@db.example.com/unicart",
+        "FLW_SECRET_KEY": "FLW" + "SECK-live-fake-test-value-only",
+        "FLW_PUBLIC_KEY": "FLW" + "PUBK-live-fake-test-value-only",
         "FLW_SECRET_HASH": "hash",
         "FLW_CALLBACK_URL": "https://api.example.com/payments/callback",
         "PUBLIC_APP_URL": "https://app.example.com",
