@@ -586,3 +586,17 @@ def send_user_batch_status_update(
     {items_html if item_links else ""}
     """
     return _send(user_email, subject, _base_template(content))
+
+def send_password_reset_code(user_email: str, code: str, expires_minutes: int = 15) -> bool:
+    """Email a short-lived password-reset code."""
+    subject = "Your UniCart password reset code"
+    content = f"""
+    <div class="header danger">
+      <h1>Reset your password</h1>
+      <p>Use this one-time code to change your UniCart password.</p>
+    </div>
+    <p>This code expires in <strong>{expires_minutes} minutes</strong>.</p>
+    <div class="code-box"><span>{escape(code)}</span></div>
+    <p>If you did not request a password reset, ignore this email. Never share this code.</p>
+    """
+    return _send(user_email, subject, _base_template(content))
