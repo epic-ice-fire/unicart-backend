@@ -7,15 +7,15 @@ import secrets
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.deps import admin_role_for, get_current_session, get_current_user
-from app.models import AuthSession, CampusSelection, User
+from app.deps import admin_role_for, get_current_session, get_current_user, require_admin
+from app.models import AdminInvite, AuthSession, CampusSelection, User
 from app.rate_limit import rate_limiter
 from app.schemas import (
     RegisterRequest,
@@ -26,6 +26,7 @@ from app.schemas import (
     PauVerifyRequest,
     PauLinkResponse,
     PauVerifyResponse,
+    _validate_new_password,
 )
 from app.security import (
     access_token_expires_at,
@@ -188,6 +189,141 @@ def _is_allowed_pau_email(email: str, school_id: str = "pau") -> bool:
     if school_id == "pau":
         allowed = allowed | _allowed_pau_domains()
     return any(domain == item or domain.endswith(f".{item}") for item in allowed)
+
+
+class AdminBootstrapRequest(BaseModel):
+    bootstrap_secret: str = Field(min_length=32, max_length=256)
+
+
+class AdminInviteRequest(BaseModel):
+    email: EmailStr
+    school_id: str = Field(pattern=r"^(pau|augustine|babcock)$")
+
+
+class AcceptAdminInviteRequest(BaseModel):
+    email: EmailStr
+    token: str = Field(min_length=32, max_length=128)
+    password: str = Field(min_length=12, max_length=128)
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        # Pydantic's normal validation runs first; the shared UniCart password
+        # policy is applied explicitly by the endpoint before hashing.
+        return super().model_validate(obj, **kwargs)
+
+
+@router.post("/admin/bootstrap")
+async def bootstrap_super_admin(
+    payload: AdminBootstrapRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """One-time owner bootstrap protected by a deployment-only secret."""
+    if not settings.ADMIN_BOOTSTRAP_SECRET or not hmac.compare_digest(
+        payload.bootstrap_secret, settings.ADMIN_BOOTSTRAP_SECRET
+    ):
+        raise HTTPException(403, "Admin bootstrap is not configured or the secret is invalid.")
+    if user.email.lower() != settings.ADMIN_EMAIL.lower():
+        raise HTTPException(403, "Only the configured owner account can be bootstrapped.")
+    if admin_role_for(user) == "super_admin":
+        raise HTTPException(409, "Superior admin is already configured.")
+    user.is_admin = True
+    user.admin_role = "super_admin"
+    user.admin_school_id = None
+    await db.commit()
+    return {"message": "Superior admin enabled.", "admin_role": "super_admin"}
+
+
+@router.post("/admin/invites", status_code=201)
+async def create_school_admin_invite(
+    payload: AdminInviteRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if admin_role_for(admin) != "super_admin":
+        raise HTTPException(403, "Only the superior admin can invite school admins.")
+    email = str(payload.email).strip().lower()
+    existing = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(409, "That email already has a UniCart account. Use a new admin email for this invitation.")
+    raw_token = secrets.token_urlsafe(32)
+    now = _utcnow()
+    invite = AdminInvite(
+        email=email,
+        school_id=payload.school_id,
+        token_hash=hashlib.sha256(raw_token.encode("utf-8")).hexdigest(),
+        created_by_user_id=admin.id,
+        created_at=now,
+        expires_at=now + timedelta(hours=48),
+    )
+    db.add(invite)
+    await db.commit()
+    return {
+        "email": email,
+        "school_id": payload.school_id,
+        "invite_token": raw_token,
+        "expires_in_hours": 48,
+        "message": "Share this one-time token securely. It will not be shown again.",
+    }
+
+
+@router.post("/admin/accept-invite", status_code=201)
+async def accept_school_admin_invite(
+    payload: AcceptAdminInviteRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    email = str(payload.email).strip().lower()
+    await rate_limiter.enforce(
+        key=f"admin-invite-accept:{_client_key(request)}:{email}",
+        limit=8,
+        window_seconds=3600,
+        detail="Too many invitation attempts. Try again later.",
+    )
+    try:
+        _validate_new_password(payload.password)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    token_hash = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
+    invite = (
+        await db.execute(
+            select(AdminInvite).where(
+                AdminInvite.email == email,
+                AdminInvite.token_hash == token_hash,
+                AdminInvite.used_at.is_(None),
+                AdminInvite.expires_at > _utcnow(),
+            )
+        )
+    ).scalar_one_or_none()
+    if not invite:
+        raise HTTPException(400, "Invitation is invalid, expired, or already used.")
+    existing = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(409, "This email already has a UniCart account.")
+    user = User(
+        email=email,
+        school_id=invite.school_id,
+        password_hash=hash_password(payload.password),
+        is_admin=True,
+        admin_role="school_admin",
+        admin_school_id=invite.school_id,
+        is_student_verified=False,
+        student_pau_email=None,
+    )
+    invite.used_at = _utcnow()
+    db.add(user)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "This email already has a UniCart account.")
+    await rate_limiter.reset(f"admin-invite-accept:{_client_key(request)}:{email}")
+    return {
+        "message": "School admin account created.",
+        "admin_role": "school_admin",
+        "admin_school_id": invite.school_id,
+    }
 
 
 @router.post("/register", response_model=MeResponse)
