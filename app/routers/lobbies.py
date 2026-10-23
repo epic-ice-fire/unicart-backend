@@ -710,7 +710,8 @@ async def remove_my_item_from_main_lobby(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
+    retailer = _normalize_retailer(retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
 
     active_pass = (
         await db.execute(
@@ -936,7 +937,8 @@ async def get_my_main_lobby_items(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
+    retailer = _normalize_retailer(retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
 
     items = (
         await db.execute(
@@ -1258,7 +1260,8 @@ async def leave_main_lobby(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id)
+    retailer = _normalize_retailer(retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
 
     active_pass = (
         await db.execute(
