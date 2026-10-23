@@ -786,7 +786,8 @@ async def remove_my_item_from_main_lobby(
     item_lobby = await db.get(Lobby, item.lobby_id)
     if not item_lobby:
         raise HTTPException(404, "Lobby not found.")
-    require_school_scope(admin_user, item_lobby.school_id)
+    # The query above already scopes the item to the authenticated owner and
+    # the selected retailer lobby. Do not use the admin-only scope helper here.
     if not item.is_active:
         raise HTTPException(409, "This item has already been removed.")
     if item_is_locked(item):
