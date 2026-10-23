@@ -133,6 +133,15 @@ async def lifespan(app: FastAPI):
             await conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_lobby_passes_shared_access_source_lobby_id ON lobby_passes (shared_access_source_lobby_id)"
             )
+            await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password_reset_code_hash VARCHAR(64)"
+            )
+            await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMP NULL"
+            )
+            await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password_reset_attempts INTEGER NOT NULL DEFAULT 0"
+            )
             logger.info("Multi-school database migration checked/applied.")
 
     yield
