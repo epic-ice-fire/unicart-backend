@@ -70,3 +70,49 @@ async def test_retailer_lobby_lookup_is_also_school_scoped(db_session):
     assert lobby.school_id == "pau"
     assert lobby.retailer == "temu"
     assert lobby.current_item_amount == 5000
+
+
+@pytest.mark.asyncio
+async def test_entry_fee_access_ends_when_paid_lobby_clears(db_session):
+    from app.models import (
+        LobbyPass, PassStatus, PaymentStatus, PaymentTransaction, User,
+    )
+    from app.routers.lobbies import (
+        find_open_paid_entry, maybe_open_next_main_lobby,
+        retire_stale_shared_passes,
+    )
+
+    user = User(email="a@example.com", school_id="pau")
+    temu = Lobby(title="MAIN", school_id="pau", retailer="temu",
+                 target_item_amount=30000, status=LobbyStatus.open)
+    shein = Lobby(title="MAIN", school_id="pau", retailer="shein",
+                  target_item_amount=45000, status=LobbyStatus.open)
+    db_session.add_all([user, temu, shein])
+    await db_session.flush()
+    db_session.add(PaymentTransaction(
+        user_id=user.id, lobby_id=temu.id, amount_ngn=2000,
+        reference="ref-1", status=PaymentStatus.success,
+    ))
+    db_session.add(LobbyPass(
+        lobby_id=shein.id, user_id=user.id, entry_fee_amount=2000,
+        status=PassStatus.active, shared_access_source_lobby_id=temu.id,
+    ))
+    await db_session.flush()
+
+    # While the paid lobby is open, the payment still counts.
+    assert await find_open_paid_entry(db_session, user) is not None
+
+    # Paid Temu lobby clears: shared SHEIN pass ends and payment no longer counts.
+    temu.status = LobbyStatus.triggered
+    await maybe_open_next_main_lobby(db_session, temu)
+    await db_session.flush()
+    shein_pass = (await db_session.execute(
+        __import__("sqlalchemy").select(LobbyPass).where(LobbyPass.lobby_id == shein.id)
+    )).scalar_one()
+    assert shein_pass.status == PassStatus.left
+    assert await find_open_paid_entry(db_session, user) is None
+
+    # Legacy safety net also retires stale shared passes.
+    shein_pass.status = PassStatus.active
+    await db_session.flush()
+    assert await retire_stale_shared_passes(db_session, user.id) == 1

@@ -181,11 +181,71 @@ async def auto_remove_unpaid_items_on_trigger(db: AsyncSession, lobby: Lobby) ->
     return len(unpaid_items)
 
 
+async def retire_shared_access_from(db: AsyncSession, source_lobby_id: int) -> int:
+    """End paired-retailer passes that were unlocked by a lobby that has now cleared."""
+    passes = (
+        await db.execute(
+            select(LobbyPass).where(
+                LobbyPass.shared_access_source_lobby_id == source_lobby_id,
+                LobbyPass.status == PassStatus.active,
+            )
+        )
+    ).scalars().all()
+    now = _utcnow()
+    for p in passes:
+        p.status = PassStatus.left
+        p.left_at = now
+    return len(passes)
+
+
+async def retire_stale_shared_passes(db: AsyncSession, user_id: int) -> int:
+    """Safety net: end this user's shared passes whose source lobby is no longer open."""
+    rows = (
+        await db.execute(
+            select(LobbyPass)
+            .join(Lobby, Lobby.id == LobbyPass.shared_access_source_lobby_id)
+            .where(
+                LobbyPass.user_id == user_id,
+                LobbyPass.status == PassStatus.active,
+                LobbyPass.shared_access_source_lobby_id.is_not(None),
+                Lobby.status != LobbyStatus.open,
+            )
+        )
+    ).scalars().all()
+    now = _utcnow()
+    for p in rows:
+        p.status = PassStatus.left
+        p.left_at = now
+    return len(rows)
+
+
+async def find_open_paid_entry(db: AsyncSession, user: User):
+    """Latest successful MAIN entry payment whose paid lobby is still open (access still valid)."""
+    return (
+        await db.execute(
+            select(PaymentTransaction, Lobby)
+            .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
+            .where(
+                PaymentTransaction.user_id == user.id,
+                PaymentTransaction.status == PaymentStatus.success,
+                Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.school_id == user.school_id,
+                Lobby.retailer.in_(["temu", "shein"]),
+                Lobby.status == LobbyStatus.open,
+            )
+            .order_by(desc(PaymentTransaction.id))
+        )
+    ).first()
+
+
 async def maybe_open_next_main_lobby(
     db: AsyncSession, just_triggered_lobby: Lobby,
 ) -> Lobby | None:
     if just_triggered_lobby.status != LobbyStatus.triggered:
         return None
+
+    # One ₦2,000 entry unlocks both channels only until the paid lobby clears.
+    await retire_shared_access_from(db, just_triggered_lobby.id)
 
     existing_open = (
         await db.execute(
@@ -461,21 +521,20 @@ async def main_lobby_details(
 
     # Backfill paired-retailer access for users who paid before the paired-pass
     # feature was deployed. Access is shared; retailer items/MOVs are not.
-    if active_pass is None:
-        paired_payment = (
+    await retire_stale_shared_passes(db, user.id)
+    if active_pass is not None and active_pass.shared_access_source_lobby_id is not None:
+        src_open = (
             await db.execute(
-                select(PaymentTransaction, Lobby)
-                .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
-                .where(
-                    PaymentTransaction.user_id == user.id,
-                    PaymentTransaction.status == PaymentStatus.success,
-                    Lobby.title == MAIN_LOBBY_TITLE,
-                    Lobby.school_id == user.school_id,
-                    Lobby.retailer.in_(["temu", "shein"]),
+                select(Lobby.id).where(
+                    Lobby.id == active_pass.shared_access_source_lobby_id,
+                    Lobby.status == LobbyStatus.open,
                 )
-                .order_by(desc(PaymentTransaction.id))
             )
         ).first()
+        if not src_open:
+            active_pass = None
+    if active_pass is None:
+        paired_payment = await find_open_paid_entry(db, user)
         if paired_payment:
             source_payment, source_lobby = paired_payment
             active_pass = LobbyPass(

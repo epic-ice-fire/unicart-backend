@@ -49,6 +49,8 @@ from app.routers.lobbies import (
     recalculate_lobby_totals,
     auto_remove_unpaid_items_on_trigger,
     maybe_open_next_main_lobby,
+    retire_stale_shared_passes,
+    find_open_paid_entry,
     send_trigger_emails,
     get_current_open_main_lobby_or_create,
 )
@@ -842,20 +844,8 @@ async def initialize_entry_fee_payment(
     # Never start a second checkout when the user already paid for the paired
     # retailer. This also repairs access for older payments when the user reaches
     # checkout directly before /main/details has backfilled the paired pass.
-    paired_payment_row = (
-        await db.execute(
-            select(PaymentTransaction, Lobby)
-            .join(Lobby, Lobby.id == PaymentTransaction.lobby_id)
-            .where(
-                PaymentTransaction.user_id == user.id,
-                PaymentTransaction.status == PaymentStatus.success,
-                Lobby.title == "MAIN",
-                Lobby.school_id == user.school_id,
-                Lobby.retailer.in_(["temu", "shein"]),
-            )
-            .order_by(desc(PaymentTransaction.id))
-        )
-    ).first()
+    await retire_stale_shared_passes(db, user.id)
+    paired_payment_row = await find_open_paid_entry(db, user)
     if paired_payment_row:
         source_payment, source_lobby = paired_payment_row
         repaired_pass = LobbyPass(
