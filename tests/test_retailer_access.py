@@ -72,15 +72,14 @@ async def test_retailer_lobby_lookup_is_also_school_scoped(db_session):
     assert lobby.current_item_amount == 5000
 
 
+
 @pytest.mark.asyncio
-async def test_entry_fee_access_ends_when_paid_lobby_clears(db_session):
-    from app.models import (
-        LobbyPass, PassStatus, PaymentStatus, PaymentTransaction, User,
-    )
-    from app.routers.lobbies import (
-        find_open_paid_entry, maybe_open_next_main_lobby,
-        retire_stale_shared_passes,
-    )
+async def test_each_retailer_pass_lives_and_dies_with_its_own_lobby(db_session):
+    from sqlalchemy import select
+    from app.models import LobbyPass, PassStatus, User
+    from app.routers.lobbies import maybe_open_next_main_lobby
+    from app.routers.payments import _grant_paired_retailer_access
+    from datetime import datetime
 
     user = User(email="a@example.com", school_id="pau")
     temu = Lobby(title="MAIN", school_id="pau", retailer="temu",
@@ -89,30 +88,15 @@ async def test_entry_fee_access_ends_when_paid_lobby_clears(db_session):
                   target_item_amount=45000, status=LobbyStatus.open)
     db_session.add_all([user, temu, shein])
     await db_session.flush()
-    db_session.add(PaymentTransaction(
-        user_id=user.id, lobby_id=temu.id, amount_ngn=2000,
-        reference="ref-1", status=PaymentStatus.success,
-    ))
-    db_session.add(LobbyPass(
-        lobby_id=shein.id, user_id=user.id, entry_fee_amount=2000,
-        status=PassStatus.active, shared_access_source_lobby_id=temu.id,
-    ))
-    await db_session.flush()
+    await _grant_paired_retailer_access(
+        db_session, user_id=user.id, paid_lobby=temu, paid_at=datetime.utcnow(),
+    )
 
-    # While the paid lobby is open, the payment still counts.
-    assert await find_open_paid_entry(db_session, user) is not None
-
-    # Paid Temu lobby clears: shared SHEIN pass ends and payment no longer counts.
+    # Temu clears: a fresh Temu lobby opens with NO free pass for this user,
+    # while the SHEIN pass stays until SHEIN itself clears.
     temu.status = LobbyStatus.triggered
-    await maybe_open_next_main_lobby(db_session, temu)
+    next_temu = await maybe_open_next_main_lobby(db_session, temu)
     await db_session.flush()
-    shein_pass = (await db_session.execute(
-        __import__("sqlalchemy").select(LobbyPass).where(LobbyPass.lobby_id == shein.id)
-    )).scalar_one()
-    assert shein_pass.status == PassStatus.left
-    assert await find_open_paid_entry(db_session, user) is None
-
-    # Legacy safety net also retires stale shared passes.
-    shein_pass.status = PassStatus.active
-    await db_session.flush()
-    assert await retire_stale_shared_passes(db_session, user.id) == 1
+    passes = (await db_session.execute(select(LobbyPass))).scalars().all()
+    assert [p.lobby_id for p in passes if p.status == PassStatus.active] == [shein.id]
+    assert all(p.lobby_id != next_temu.id for p in passes)
