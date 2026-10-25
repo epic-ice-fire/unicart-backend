@@ -398,7 +398,7 @@ def _build_admin_batch(
 
 @router.post("/create_main", response_model=CreateMainLobbyResponse)
 async def create_main_lobby(
-    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock|veritas)$"),
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -1078,7 +1078,7 @@ async def get_my_batch_history(
 
 @router.get("/admin/dashboard", response_model=AdminDashboardResponse)
 async def admin_dashboard(
-    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock|veritas)$"),
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -1148,7 +1148,7 @@ async def admin_dashboard(
 @router.patch("/admin/open-lobby/target", response_model=LobbySnapshotResponse)
 async def admin_update_open_lobby_target(
     payload: UpdateTargetRequest,
-    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock|veritas)$"),
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
@@ -1359,7 +1359,7 @@ async def leave_main_lobby(
 @router.patch("/main/target", response_model=LobbySnapshotResponse)
 async def update_main_target(
     payload: UpdateTargetRequest,
-    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock)$"),
+    school_id: str = Query(default="pau", pattern=r"^(pau|augustine|babcock|veritas)$"),
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
     admin_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),

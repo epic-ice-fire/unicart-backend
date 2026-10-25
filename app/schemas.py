@@ -33,7 +33,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
     phone_number: str | None = Field(default=None, min_length=7, max_length=32)
-    school_id: str = Field(default="pau", pattern=r"^(pau|augustine|babcock)$")
+    school_id: str = Field(default="pau", pattern=r"^(pau|augustine|babcock|veritas)$")
 
     @field_validator("phone_number")
     @classmethod

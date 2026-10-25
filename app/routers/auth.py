@@ -193,6 +193,7 @@ SCHOOL_EMAIL_DOMAINS = {
     "pau": {"pau.edu.ng"},
     "augustine": {"augustineuniversity.edu.ng"},
     "babcock": {"babcock.edu.ng"},
+    "veritas": {"veritas.edu.ng"},
 }
 
 
@@ -235,12 +236,12 @@ class AdminBootstrapRequest(BaseModel):
 
 class AdminInviteRequest(BaseModel):
     email: EmailStr
-    school_id: str = Field(pattern=r"^(pau|augustine|babcock)$")
+    school_id: str = Field(pattern=r"^(pau|augustine|babcock|veritas)$")
 
 
 class PromoteExistingAdminRequest(BaseModel):
     email: EmailStr
-    school_id: str = Field(pattern=r"^(pau|augustine|babcock)$")
+    school_id: str = Field(pattern=r"^(pau|augustine|babcock|veritas)$")
 
 
 class AcceptAdminInviteRequest(BaseModel):
@@ -987,7 +988,7 @@ async def delete_my_account(
 
 
 class CampusSelectionRequest(BaseModel):
-    selected_school_id: str = Field(pattern=r"^(pau|augustine|babcock)$")
+    selected_school_id: str = Field(pattern=r"^(pau|augustine|babcock|veritas)$")
 
 
 @router.post("/campus-selection", status_code=201)

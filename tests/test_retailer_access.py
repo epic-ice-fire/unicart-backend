@@ -100,3 +100,12 @@ async def test_each_retailer_pass_lives_and_dies_with_its_own_lobby(db_session):
     passes = (await db_session.execute(select(LobbyPass))).scalars().all()
     assert [p.lobby_id for p in passes if p.status == PassStatus.active] == [shein.id]
     assert all(p.lobby_id != next_temu.id for p in passes)
+
+
+def test_veritas_is_a_supported_school():
+    import re
+    from app.routers.auth import SCHOOL_EMAIL_DOMAINS
+    assert "veritas.edu.ng" in SCHOOL_EMAIL_DOMAINS["veritas"]
+    from app import schemas
+    src = open(schemas.__file__).read()
+    assert re.search(r"pau\|augustine\|babcock\|veritas", src)
