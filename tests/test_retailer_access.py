@@ -138,3 +138,25 @@ async def test_admin_topup_adds_counts_and_never_fills_the_lobby(db_session):
     r = await admin_lobby_topup(LobbyTopUpRequest(mode="reset"), school_id="pau", retailer="shein",
                                 admin_user=admin, db=db_session)
     assert r["topup_total"] == 0 and r["current_item_amount"] == 0
+
+
+@pytest.mark.asyncio
+async def test_selected_campus_decides_which_lobby_is_used(db_session):
+    from sqlalchemy import select
+    from app.models import User, Lobby as L
+    from app.routers.lobbies import main_lobby_snapshot, admin_lobby_topup, LobbyTopUpRequest
+
+    owner = User(email="owner@example.com", school_id="pau", is_admin=True, admin_role="super_admin")
+    db_session.add(owner)
+    await db_session.flush()
+
+    # Top up Augustine SHEIN only.
+    await admin_lobby_topup(LobbyTopUpRequest(amount=5000), school_id="augustine", retailer="shein",
+                            admin_user=owner, db=db_session)
+
+    # Account registered at PAU, but browsing Augustine: sees Augustine's balance.
+    aug = await main_lobby_snapshot(retailer="shein", school_id="augustine", user=owner, db=db_session)
+    pau = await main_lobby_snapshot(retailer="shein", school_id=None, user=owner, db=db_session)
+    assert aug.current_item_amount == 5000
+    assert pau.current_item_amount == 0
+    assert aug.lobby_id != pau.lobby_id

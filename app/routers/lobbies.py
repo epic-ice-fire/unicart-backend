@@ -67,6 +67,11 @@ def item_is_locked(item: LobbyItem) -> bool:
     return item.item_payment_status in {ItemPaymentStatus.pending, ItemPaymentStatus.paid}
 
 
+def campus_for(school_id, user: User) -> str:
+    """The campus the user is browsing (explicit choice) or their registered school."""
+    return school_id if isinstance(school_id, str) and school_id else user.school_id
+
+
 async def create_open_main_lobby(db: AsyncSession, school_id: str = "pau", retailer: str = "temu") -> Lobby:
     retailer = _normalize_retailer(retailer)
     lobby = Lobby(
@@ -427,10 +432,11 @@ async def create_main_lobby(
 @router.get("/main", response_model=LobbySnapshotResponse)
 async def main_lobby_snapshot(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, campus_for(school_id, user), retailer)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
@@ -445,10 +451,11 @@ async def main_lobby_snapshot(
 @router.get("/main/details", response_model=MainLobbyDetailsResponse)
 async def main_lobby_details(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, campus_for(school_id, user), retailer)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
 
     active_pass = (
@@ -570,11 +577,12 @@ async def main_lobby_details(
 @router.post("/main/join", response_model=JoinLobbyResponse)
 async def join_main_lobby(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     retailer = _normalize_retailer(retailer)
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, campus_for(school_id, user), retailer)
 
     existing_pass = (
         await db.execute(
@@ -674,11 +682,12 @@ async def join_main_lobby(
 async def add_item_to_main_lobby(
     payload: AddItemRequest,
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     retailer = _normalize_retailer(retailer)
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, campus_for(school_id, user), retailer)
 
     active_pass = (
         await db.execute(
@@ -728,11 +737,12 @@ async def add_item_to_main_lobby(
 async def remove_my_item_from_main_lobby(
     item_id: int,
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     retailer = _normalize_retailer(retailer)
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, campus_for(school_id, user), retailer)
 
     active_pass = (
         await db.execute(
@@ -956,11 +966,12 @@ async def admin_force_remove_item(
 @router.get("/main/my-items", response_model=MyLobbyItemsListResponse)
 async def get_my_main_lobby_items(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     retailer = _normalize_retailer(retailer)
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, campus_for(school_id, user), retailer)
 
     items = (
         await db.execute(
@@ -1021,6 +1032,7 @@ async def get_my_payment_history(
 @router.get("/my-history", response_model=UserBatchHistoryListResponse)
 async def get_my_batch_history(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1033,6 +1045,7 @@ async def get_my_batch_history(
             select(Lobby)
             .where(
                 Lobby.title == MAIN_LOBBY_TITLE,
+                Lobby.school_id == campus_for(school_id, user),
                 Lobby.retailer == retailer,
                 Lobby.status != LobbyStatus.open,
                 or_(Lobby.id.in_(lobby_ids_from_passes), Lobby.id.in_(lobby_ids_from_items)),
@@ -1041,7 +1054,7 @@ async def get_my_batch_history(
         )
     ).scalars().all()
 
-    batch_numbers = await get_chronological_batch_numbers(db, user.school_id, retailer)
+    batch_numbers = await get_chronological_batch_numbers(db, campus_for(school_id, user), retailer)
     batches = []
     for lobby in lobbies:
         user_items = (
@@ -1370,11 +1383,12 @@ async def admin_update_batch_status(
 @router.post("/main/leave", response_model=LeaveLobbyResponse)
 async def leave_main_lobby(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     retailer = _normalize_retailer(retailer)
-    lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, campus_for(school_id, user), retailer)
 
     active_pass = (
         await db.execute(

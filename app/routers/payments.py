@@ -49,6 +49,7 @@ from app.routers.lobbies import (
     recalculate_lobby_totals,
     auto_remove_unpaid_items_on_trigger,
     maybe_open_next_main_lobby,
+    campus_for,
     send_trigger_emails,
     get_current_open_main_lobby_or_create,
 )
@@ -821,10 +822,11 @@ async def _mark_item_payment_success_and_check_trigger(
 @router.post("/entry-fee/initialize", response_model=EntryFeeInitializeResponse)
 async def initialize_entry_fee_payment(
     retailer: str = Query(default="temu", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    lobby = await _get_open_lobby(db, user.school_id, retailer)
+    lobby = await _get_open_lobby(db, campus_for(school_id, user), retailer)
     if not lobby:
         raise HTTPException(404, "No open main lobby found.")
 
