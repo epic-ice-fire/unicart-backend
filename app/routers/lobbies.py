@@ -3,6 +3,7 @@ import logging
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func, desc, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -430,7 +431,6 @@ async def main_lobby_snapshot(
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
-    await ensure_promo_boost(db, lobby)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
     await db.commit()
     await db.refresh(lobby)
@@ -449,7 +449,6 @@ async def main_lobby_details(
     db: AsyncSession = Depends(get_db),
 ):
     lobby = await get_current_open_main_lobby_or_create(db, user.school_id, retailer)
-    await ensure_promo_boost(db, lobby)
     await recalculate_lobby_totals(db, lobby, allow_trigger=False)
 
     active_pass = (
@@ -543,18 +542,6 @@ async def main_lobby_details(
         )
     ).scalar_one() or 0
 
-    promo_amount = (
-        await db.execute(
-            select(func.coalesce(func.sum(LobbyItem.item_amount), 0))
-            .where(
-                LobbyItem.lobby_id == lobby.id,
-                LobbyItem.is_promo.is_(True),
-                LobbyItem.is_active.is_(True),
-                LobbyItem.item_payment_status == ItemPaymentStatus.paid,
-            )
-        )
-    ).scalar_one() or 0
-
     await db.commit()
     await db.refresh(lobby)
 
@@ -575,7 +562,6 @@ async def main_lobby_details(
         latest_payment_status=latest_payment.status.value if latest_payment else None,
         latest_payment_reference=latest_payment.reference if latest_payment else None,
         has_successful_payment_for_current_lobby=successful_payment is not None,
-        promo_amount=int(promo_amount),
         has_shared_access=(active_pass is not None and active_pass.shared_access_source_lobby_id is not None),
         shared_access_source_lobby_id=(active_pass.shared_access_source_lobby_id if active_pass else None),
     )
@@ -1204,43 +1190,31 @@ async def admin_update_open_lobby_target(
     )
 
 
-PROMO_SCHOOLS = ("pau", "augustine", "babcock", "veritas")
+class LobbyTopUpRequest(BaseModel):
+    amount: int = Field(default=0, ge=0, le=5_000_000)
+    mode: str = Field(default="add", pattern=r"^(add|reset)$")
 
 
-async def ensure_promo_boost(db: AsyncSession, lobby: Lobby) -> int:
-    """Keep the owner-funded seed on a lobby at its configured share of the target.
+@router.post("/admin/lobby-topup")
+async def admin_lobby_topup(
+    payload: LobbyTopUpRequest,
+    school_id: str = Query(pattern=r"^(pau|augustine|babcock|veritas)$"),
+    retailer: str = Query(default="shein", pattern=r"^(temu|shein)$"),
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add owner-funded money to a campus' open lobby.
 
-    The seed is a real, paid item owned by the owner/admin account (flagged
-    ``is_promo``). It counts toward the goal, never fills a lobby on its own and
-    is idempotent: at most one active seed item per lobby.
+    It is recorded as a real, paid item owned by the admin who adds it, so it
+    counts toward the goal and the admin settles the difference when the batch is
+    bought. It can never fill a lobby on its own. ``mode=reset`` removes it.
     """
-    pct = settings.PROMO_BOOST_PERCENTS.get(lobby.school_id or "")
-    if not pct or lobby.retailer != settings.PROMO_BOOST_RETAILER:
-        return 0
-    if lobby.status != LobbyStatus.open or lobby.title != MAIN_LOBBY_TITLE:
-        return 0
-    owner = (
-        await db.execute(
-            select(User).where(func.lower(User.email) == settings.ADMIN_EMAIL.lower())
-        )
-    ).scalars().first()
-    if owner is None:
-        return 0
-    real_total = (
-        await db.execute(
-            select(func.coalesce(func.sum(LobbyItem.item_amount), 0)).where(
-                LobbyItem.lobby_id == lobby.id,
-                LobbyItem.is_active.is_(True),
-                LobbyItem.is_promo.is_(False),
-                LobbyItem.item_payment_status == ItemPaymentStatus.paid,
-            )
-        )
-    ).scalar_one() or 0
-    desired = int(round(lobby.target_item_amount * pct / 100 / 100.0) * 100)
-    desired = min(desired, lobby.target_item_amount - real_total - 100)
-    if desired <= 0:
-        return 0
-    item = (
+    require_school_scope(admin_user, school_id)
+    retailer = _normalize_retailer(retailer)
+    lobby = await get_current_open_main_lobby_or_create(db, school_id, retailer)
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
+
+    topups = (
         await db.execute(
             select(LobbyItem).where(
                 LobbyItem.lobby_id == lobby.id,
@@ -1248,54 +1222,58 @@ async def ensure_promo_boost(db: AsyncSession, lobby: Lobby) -> int:
                 LobbyItem.is_active.is_(True),
             )
         )
-    ).scalars().first()
-    if item is None:
+    ).scalars().all()
+    current_topup = sum(i.item_amount for i in topups)
+    now = _utcnow()
+
+    if payload.mode == "reset":
+        for item in topups:
+            item.is_active = False
+            item.removed_at = now
+        new_total = 0
+    else:
+        if payload.amount <= 0:
+            raise HTTPException(400, "Enter an amount greater than zero.")
+        real_total = lobby.current_item_amount - current_topup
+        new_total = current_topup + payload.amount
+        if real_total + new_total >= lobby.target_item_amount:
+            room = max(0, lobby.target_item_amount - real_total - current_topup - 100)
+            raise HTTPException(
+                400,
+                f"That would fill the lobby. You can add at most \u20a6{room:,} right now.",
+            )
         db.add(LobbyItem(
             lobby_id=lobby.id,
-            user_id=owner.id,
-            item_link="UniCart seed contribution",
-            item_amount=desired,
+            user_id=admin_user.id,
+            item_link="UniCart owner top-up",
+            item_amount=payload.amount,
             is_active=True,
             is_promo=True,
-            item_payment_amount_ngn=desired,
+            item_payment_amount_ngn=payload.amount,
             item_payment_status=ItemPaymentStatus.paid,
-            item_paid_at=_utcnow(),
+            item_paid_at=now,
         ))
-        await db.flush()
-        await record_audit_event(
-            db,
-            event_type="ADMIN_PROMO_BOOST",
-            actor_user_id=owner.id,
-            lobby_id=lobby.id,
-            details={"school_id": lobby.school_id, "amount": desired, "percent_of_target": pct},
-        )
-    elif item.item_amount != desired and real_total + desired < lobby.target_item_amount:
-        item.item_amount = desired
-        item.item_payment_amount_ngn = desired
-        await db.flush()
-    return desired
-
-
-@router.post("/admin/promo-boost")
-async def admin_promo_boost(
-    admin_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Apply the configured seed to every campus' open lobby right now (super admin)."""
-    for sid in PROMO_SCHOOLS:
-        require_school_scope(admin_user, sid)
-    results = []
-    for sid in PROMO_SCHOOLS:
-        lobby = await get_current_open_main_lobby_or_create(db, sid, settings.PROMO_BOOST_RETAILER)
-        amount = await ensure_promo_boost(db, lobby)
-        await recalculate_lobby_totals(db, lobby, allow_trigger=False)
-        results.append({
-            "school_id": sid, "lobby_id": lobby.id, "status": "boosted" if amount else "skipped",
-            "amount": amount, "current_item_amount": lobby.current_item_amount,
-            "target_item_amount": lobby.target_item_amount,
-        })
+    await db.flush()
+    await recalculate_lobby_totals(db, lobby, allow_trigger=False)
+    await record_audit_event(
+        db,
+        event_type="ADMIN_LOBBY_TOPUP",
+        actor_user_id=admin_user.id,
+        lobby_id=lobby.id,
+        details={
+            "school_id": school_id, "retailer": retailer,
+            "mode": payload.mode, "amount": payload.amount, "topup_total": new_total,
+        },
+    )
     await db.commit()
-    return {"retailer": settings.PROMO_BOOST_RETAILER, "results": results}
+    return {
+        "school_id": school_id,
+        "retailer": retailer,
+        "lobby_id": lobby.id,
+        "topup_total": new_total,
+        "current_item_amount": lobby.current_item_amount,
+        "target_item_amount": lobby.target_item_amount,
+    }
 
 
 @router.patch("/admin/batches/{lobby_id}/status", response_model=AdminBatchEntryResponse)

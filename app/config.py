@@ -102,17 +102,6 @@ class Settings:
         )
         # Per-network limits are generous on purpose: a whole campus often
         # shares one public IP address on Wi-Fi.
-        # Owner-funded SHEIN seed per campus, as a percent of the lobby target.
-        # Format "school:percent,..."; set to an empty string to switch it off.
-        self.PROMO_BOOST_PERCENTS: dict[str, int] = {}
-        for _part in os.getenv(
-            "PROMO_BOOST_PERCENTS", "pau:30,augustine:20,babcock:27,veritas:10",
-        ).split(","):
-            if ":" in _part:
-                _sid, _pct = _part.split(":", 1)
-                if _sid.strip() and _pct.strip().isdigit():
-                    self.PROMO_BOOST_PERCENTS[_sid.strip().lower()] = int(_pct)
-        self.PROMO_BOOST_RETAILER: str = os.getenv("PROMO_BOOST_RETAILER", "shein").strip().lower()
         self.RATE_LIMIT_REGISTER_PER_IP_HOUR: int = int(
             os.getenv("RATE_LIMIT_REGISTER_PER_IP_HOUR", "60")
         )

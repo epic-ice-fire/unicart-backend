@@ -113,22 +113,28 @@ def test_veritas_is_a_supported_school():
 
 
 @pytest.mark.asyncio
-async def test_promo_seed_uses_configured_share_per_campus(db_session):
-    from sqlalchemy import select
-    from app.config import settings
-    from app.models import LobbyItem, User
-    from app.routers.lobbies import admin_promo_boost
+async def test_admin_topup_adds_counts_and_never_fills_the_lobby(db_session):
+    import pytest as _pt
+    from fastapi import HTTPException
+    from app.models import User
+    from app.routers.lobbies import LobbyTopUpRequest, admin_lobby_topup
 
-    admin = User(email=settings.ADMIN_EMAIL, school_id="pau", is_admin=True, admin_role="super_admin")
+    admin = User(email="owner@example.com", school_id="pau", is_admin=True, admin_role="super_admin")
     db_session.add(admin)
     await db_session.flush()
 
-    out = await admin_promo_boost(admin_user=admin, db=db_session)
-    got = {r["school_id"]: r["amount"] / r["target_item_amount"] * 100 for r in out["results"]}
-    assert {k: round(v) for k, v in got.items()} == {"pau": 30, "augustine": 20, "babcock": 27, "veritas": 10}
-    items = (await db_session.execute(select(LobbyItem))).scalars().all()
-    assert len(items) == 4 and all(i.is_promo for i in items)
+    r = await admin_lobby_topup(LobbyTopUpRequest(amount=6000), school_id="pau", retailer="shein",
+                                admin_user=admin, db=db_session)
+    assert r["topup_total"] == 6000 and r["current_item_amount"] == 6000
+    r = await admin_lobby_topup(LobbyTopUpRequest(amount=2000), school_id="pau", retailer="shein",
+                                admin_user=admin, db=db_session)
+    assert r["topup_total"] == 8000 and r["current_item_amount"] == 8000
 
-    await admin_promo_boost(admin_user=admin, db=db_session)  # idempotent
-    items = (await db_session.execute(select(LobbyItem))).scalars().all()
-    assert len(items) == 4
+    with _pt.raises(HTTPException) as e:
+        await admin_lobby_topup(LobbyTopUpRequest(amount=50000), school_id="pau", retailer="shein",
+                                admin_user=admin, db=db_session)
+    assert e.value.status_code == 400
+
+    r = await admin_lobby_topup(LobbyTopUpRequest(mode="reset"), school_id="pau", retailer="shein",
+                                admin_user=admin, db=db_session)
+    assert r["topup_total"] == 0 and r["current_item_amount"] == 0
