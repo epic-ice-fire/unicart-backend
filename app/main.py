@@ -94,6 +94,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS school_id VARCHAR(40) NOT NULL DEFAULT 'pau'"
             )
             await conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS lobby_items ADD COLUMN IF NOT EXISTS is_promo BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+            await conn.exec_driver_sql(
                 "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)"
             )
             await conn.exec_driver_sql(

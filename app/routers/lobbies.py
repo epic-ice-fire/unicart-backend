@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import logging
+import secrets as _secrets
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -541,6 +542,18 @@ async def main_lobby_details(
         )
     ).scalar_one() or 0
 
+    promo_amount = (
+        await db.execute(
+            select(func.coalesce(func.sum(LobbyItem.item_amount), 0))
+            .where(
+                LobbyItem.lobby_id == lobby.id,
+                LobbyItem.is_promo.is_(True),
+                LobbyItem.is_active.is_(True),
+                LobbyItem.item_payment_status == ItemPaymentStatus.paid,
+            )
+        )
+    ).scalar_one() or 0
+
     await db.commit()
     await db.refresh(lobby)
 
@@ -561,6 +574,7 @@ async def main_lobby_details(
         latest_payment_status=latest_payment.status.value if latest_payment else None,
         latest_payment_reference=latest_payment.reference if latest_payment else None,
         has_successful_payment_for_current_lobby=successful_payment is not None,
+        promo_amount=int(promo_amount),
         has_shared_access=(active_pass is not None and active_pass.shared_access_source_lobby_id is not None),
         shared_access_source_lobby_id=(active_pass.shared_access_source_lobby_id if active_pass else None),
     )
@@ -1187,6 +1201,90 @@ async def admin_update_open_lobby_target(
         target_item_amount=lobby.target_item_amount,
         member_count=lobby.member_count,
     )
+
+
+PROMO_SCHOOLS = ("pau", "augustine", "babcock", "veritas")
+
+
+@router.post("/admin/promo-boost")
+async def admin_promo_boost(
+    retailer: str = Query(default="shein", pattern=r"^(temu|shein)$"),
+    school_id: str | None = Query(default=None, pattern=r"^(pau|augustine|babcock|veritas)$"),
+    min_percent: int = Query(default=10, ge=1, le=50),
+    max_percent: int = Query(default=20, ge=1, le=50),
+    admin_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a UniCart-funded promo contribution to open lobbies.
+
+    The contribution is a real, paid item owned by the admin who runs this, sized
+    at a random min-max percent of each lobby's target. It counts toward the goal,
+    is flagged ``is_promo`` and is shown to users as a UniCart promo. It never
+    triggers a lobby by itself.
+    """
+    if max_percent < min_percent:
+        raise HTTPException(400, "max_percent must be >= min_percent.")
+    retailer = _normalize_retailer(retailer)
+    schools = [school_id] if school_id else list(PROMO_SCHOOLS)
+    for sid in schools:
+        require_school_scope(admin_user, sid)
+
+    results = []
+    for sid in schools:
+        lobby = await get_current_open_main_lobby_or_create(db, sid, retailer)
+        existing = (
+            await db.execute(
+                select(func.count()).select_from(LobbyItem).where(
+                    LobbyItem.lobby_id == lobby.id,
+                    LobbyItem.is_promo.is_(True),
+                    LobbyItem.is_active.is_(True),
+                )
+            )
+        ).scalar_one()
+        if existing:
+            results.append({"school_id": sid, "lobby_id": lobby.id, "status": "already_boosted"})
+            continue
+        await recalculate_lobby_totals(db, lobby, allow_trigger=False)
+        pct = _secrets.SystemRandom().uniform(min_percent, max_percent) / 100
+        amount = int(round(lobby.target_item_amount * pct / 100.0) * 100)
+        headroom = lobby.target_item_amount - lobby.current_item_amount - 100
+        amount = min(amount, headroom)
+        if amount <= 0:
+            results.append({"school_id": sid, "lobby_id": lobby.id, "status": "no_headroom"})
+            continue
+        now = _utcnow()
+        db.add(LobbyItem(
+            lobby_id=lobby.id,
+            user_id=admin_user.id,
+            item_link="UniCart promo contribution",
+            item_amount=amount,
+            is_active=True,
+            is_promo=True,
+            item_payment_amount_ngn=amount,
+            item_payment_status=ItemPaymentStatus.paid,
+            item_paid_at=now,
+        ))
+        await db.flush()
+        await recalculate_lobby_totals(db, lobby, allow_trigger=False)
+        await record_audit_event(
+            db,
+            event_type="ADMIN_PROMO_BOOST",
+            actor_user_id=admin_user.id,
+            lobby_id=lobby.id,
+            details={
+                "school_id": sid,
+                "retailer": retailer,
+                "amount": amount,
+                "percent_of_target": round(amount / lobby.target_item_amount * 100, 1),
+            },
+        )
+        results.append({
+            "school_id": sid, "lobby_id": lobby.id, "status": "boosted",
+            "amount": amount, "current_item_amount": lobby.current_item_amount,
+            "target_item_amount": lobby.target_item_amount,
+        })
+    await db.commit()
+    return {"retailer": retailer, "results": results}
 
 
 @router.patch("/admin/batches/{lobby_id}/status", response_model=AdminBatchEntryResponse)

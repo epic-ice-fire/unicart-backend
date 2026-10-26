@@ -177,6 +177,8 @@ class LobbyItem(Base):
     item_link: Mapped[str] = mapped_column(Text)
     item_amount: Mapped[int] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # True for a UniCart-funded promo contribution (real money from the owner).
+    is_promo: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
     removed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

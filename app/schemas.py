@@ -193,6 +193,7 @@ class MainLobbyDetailsResponse(BaseModel):
     has_successful_payment_for_current_lobby: bool
     has_shared_access: bool = False
     shared_access_source_lobby_id: int | None = None
+    promo_amount: int = 0
 
 
 class CreateMainLobbyResponse(BaseModel):
