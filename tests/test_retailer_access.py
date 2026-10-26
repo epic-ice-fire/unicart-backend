@@ -111,31 +111,24 @@ def test_veritas_is_a_supported_school():
     assert re.search(r"pau\|augustine\|babcock\|veritas", src)
 
 
+
 @pytest.mark.asyncio
-async def test_promo_boost_adds_10_to_20_percent_once_per_lobby(db_session):
+async def test_promo_seed_uses_configured_share_per_campus(db_session):
     from sqlalchemy import select
+    from app.config import settings
     from app.models import LobbyItem, User
     from app.routers.lobbies import admin_promo_boost
 
-    admin = User(email="owner@example.com", school_id="pau", is_admin=True, admin_role="super_admin")
+    admin = User(email=settings.ADMIN_EMAIL, school_id="pau", is_admin=True, admin_role="super_admin")
     db_session.add(admin)
     await db_session.flush()
 
-    out = await admin_promo_boost(
-        retailer="shein", school_id=None, min_percent=10, max_percent=20,
-        admin_user=admin, db=db_session,
-    )
-    assert [r["school_id"] for r in out["results"]] == ["pau", "augustine", "babcock", "veritas"]
-    for r in out["results"]:
-        assert r["status"] == "boosted"
-        pct = r["amount"] / r["target_item_amount"] * 100
-        assert 9.5 <= pct <= 20.5
-        assert r["current_item_amount"] == r["amount"] < r["target_item_amount"]
+    out = await admin_promo_boost(admin_user=admin, db=db_session)
+    got = {r["school_id"]: r["amount"] / r["target_item_amount"] * 100 for r in out["results"]}
+    assert {k: round(v) for k, v in got.items()} == {"pau": 30, "augustine": 20, "babcock": 27, "veritas": 10}
     items = (await db_session.execute(select(LobbyItem))).scalars().all()
     assert len(items) == 4 and all(i.is_promo for i in items)
 
-    again = await admin_promo_boost(
-        retailer="shein", school_id=None, min_percent=10, max_percent=20,
-        admin_user=admin, db=db_session,
-    )
-    assert all(r["status"] == "already_boosted" for r in again["results"])
+    await admin_promo_boost(admin_user=admin, db=db_session)  # idempotent
+    items = (await db_session.execute(select(LobbyItem))).scalars().all()
+    assert len(items) == 4
