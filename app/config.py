@@ -131,6 +131,9 @@ class Settings:
         required_frontend_origins = {
             self.PUBLIC_APP_URL,
             "https://unicartbytekena.onrender.com",
+            # Mirror deployment on GitHub Pages (same owner); without this the
+            # installed copy of the app cannot reach the API.
+            "https://epic-ice-fire.github.io",
         }
         for origin in required_frontend_origins:
             if origin and origin not in self.BACKEND_CORS_ORIGINS:
